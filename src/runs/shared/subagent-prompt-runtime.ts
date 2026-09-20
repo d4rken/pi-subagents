@@ -194,13 +194,26 @@ export function stripSubagentOrchestrationSkill(prompt: string): string {
 		.replace(/[ \t]*<skill>\s*[\s\S]*?<\/skill>\s*/g, (block) => SUBAGENT_ORCHESTRATION_SKILL_NAME_PATTERN.test(block) ? "" : block);
 }
 
-function stripChildBoundaryInstructions(prompt: string): string {
+export function stripChildBoundaryInstructions(prompt: string): string {
 	let rewritten = prompt;
 	for (const boundary of [CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS, CHILD_FANOUT_BOUNDARY_INSTRUCTIONS]) {
 		rewritten = rewritten.split(boundary).join("");
 	}
 	return rewritten.replace(/^(?:[ \t]*\r?\n)+/, "");
 }
+
+/** The child-only instructions pi must assemble into the prompt it builds.
+ *
+ *  Assembled at launch rather than prepended afterwards: a prompt edited after
+ *  `before_agent_start` no longer matches what providers recorded there, and a
+ *  provider that identifies prompts by their text then cannot account for it. */
+export function childPromptPreamble(options: { fanoutChild?: boolean; structuredOutput?: boolean }): string {
+	const boundary = options.fanoutChild ? CHILD_FANOUT_BOUNDARY_INSTRUCTIONS : CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS;
+	return options.structuredOutput ? `${boundary}\n\n${STRUCTURED_OUTPUT_INSTRUCTIONS}` : boundary;
+}
+
+/** Name of the orchestration skill a child must never inherit. */
+export const ORCHESTRATION_SKILL_NAME = "pi-subagents";
 
 export function rewriteSubagentPrompt(
 	prompt: string,
@@ -534,19 +547,10 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI, config?:
 			pi.setSessionName(childSessionName);
 		}
 
-		const { inheritProjectContext, inheritGlobalContext, inheritSkills } = config;
-		const fanoutChild = config.fanoutChild;
-		let rewritten = event.systemPrompt;
-		if (inheritProjectContext !== undefined || inheritGlobalContext !== undefined || inheritSkills !== undefined || fanoutChild) {
-			rewritten = rewriteSubagentPrompt(event.systemPrompt, {
-				inheritProjectContext: inheritProjectContext ?? true,
-				inheritGlobalContext: inheritGlobalContext ?? true,
-				inheritSkills: inheritSkills ?? true,
-				fanoutChild,
-				structuredOutput: Boolean(config.structuredOutput),
-			});
-		}
-		if (rewritten === event.systemPrompt) return;
-		return { systemPrompt: rewritten };
+		// The prompt arrives already correct: inheritance was resolved by the child's
+		// resource loader and the boundary was assembled in by buildInProcessChildLaunch.
+		// Returning an edit here would replace the string every other extension recorded
+		// from this same event. test/unit/child-prompt-assembly.test.ts pins the assembly.
+		return;
 	});
 }

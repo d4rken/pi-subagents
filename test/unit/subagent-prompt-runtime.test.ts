@@ -20,6 +20,7 @@ import registerSubagentPromptRuntime, {
 	CHILD_FANOUT_BOUNDARY_INSTRUCTIONS,
 	CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS,
 	registerPermissionGate,
+	childPromptPreamble,
 	rewriteSubagentPrompt,
 	stripGlobalContext,
 	stripInheritedSkills,
@@ -1038,7 +1039,7 @@ describe("subagent prompt runtime", () => {
 		assert.equal(sessionName, "subagent-worker-78f659a3");
 	});
 
-	it("rewrites the final child-visible prompt through before_agent_start", async () => {
+	it("leaves the assembled prompt untouched at before_agent_start", async () => {
 		let beforeAgentStart: ((event: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>) | undefined;
 		registerSubagentPromptRuntime({
 			on(event: string, handler: (payload: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>) {
@@ -1049,14 +1050,13 @@ describe("subagent prompt runtime", () => {
 
 		assert.ok(beforeAgentStart, "expected before_agent_start handler");
 
-		const rewritten = await beforeAgentStart?.({ systemPrompt: BASE_PROMPT });
-		assert.ok(rewritten);
-		assert.ok(!rewritten.systemPrompt.includes("# Project Context"));
-		assert.ok(!rewritten.systemPrompt.includes("<available_skills>"));
-		assert.ok(rewritten.systemPrompt.includes("Current date: 2026-04-16"));
+		// Inheritance is resolved by the child's resource loader before the prompt is
+		// rendered, so the handler must hand back the string it was given. The
+		// filtering itself is covered by the rewriteSubagentPrompt cases above.
+		assert.equal(await beforeAgentStart?.({ systemPrompt: BASE_PROMPT }), undefined);
 	});
 
-	it("uses the fanout boundary through before_agent_start for a fanout child", async () => {
+	it("uses the fanout boundary in the launch preamble for a fanout child", async () => {
 		let beforeAgentStart: ((event: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>) | undefined;
 		registerSubagentPromptRuntime({
 			on(event: string, handler: (payload: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>) {
@@ -1065,9 +1065,9 @@ describe("subagent prompt runtime", () => {
 			getAllTools: () => [{ name: "intercom" }, { name: "contact_supervisor" }],
 		} as { on(event: string, handler: (payload: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>): void; getAllTools(): Array<{ name: string }> }, childConfig({ fanoutChild: true, inheritProjectContext: true, inheritGlobalContext: true, inheritSkills: true }));
 
-		const rewritten = await beforeAgentStart?.({ systemPrompt: BASE_PROMPT });
-		assert.ok(rewritten);
-		assert.ok(rewritten.systemPrompt.startsWith(CHILD_FANOUT_BOUNDARY_INSTRUCTIONS));
+		// The fanout boundary reaches the child through the launch preamble now.
+		assert.equal(await beforeAgentStart?.({ systemPrompt: BASE_PROMPT }), undefined);
+		assert.equal(childPromptPreamble({ fanoutChild: true }), CHILD_FANOUT_BOUNDARY_INSTRUCTIONS);
 	});
 
 	it("filters parent-only artifacts from polluted fork context while preserving ordinary history", () => {

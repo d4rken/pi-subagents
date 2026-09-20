@@ -16,6 +16,7 @@ import {
 	type RunFanoutBudgetDescriptor,
 	type HerdrMachineReference,
 } from "../../shared/types.ts";
+import { childPromptPreamble, stripChildBoundaryInstructions } from "./subagent-prompt-runtime.ts";
 import type { NestedPathEntry } from "./nested-path.ts";
 import type { McpRuntimeSnapshotHost } from "./mcp-direct-tool-allowlist.ts";
 import type { PermissionRules } from "./permissions.ts";
@@ -303,9 +304,13 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		disableAmbientExtensions: !ambientExtensions,
 		requiredExtensions: toolPlan.requiredExtensions,
 	});
+	// Child-only instructions join the prompt pi assembles, so the string recorded
+	// at `before_agent_start` is the one the provider receives.
+	const preamble = childPromptPreamble({ fanoutChild: fanout, structuredOutput: Boolean(input.structuredOutput) });
 	const taggedPrompt = input.systemPrompt !== undefined && input.systemPrompt !== null
-		? `<active_agent name="${escapeXmlAttr(input.childAgentName)}"/>\n\n${input.systemPrompt}`
+		? `<active_agent name="${escapeXmlAttr(input.childAgentName)}"/>\n\n${stripChildBoundaryInstructions(input.systemPrompt)}`
 		: undefined;
+	const childPrompt = taggedPrompt !== undefined ? `${preamble}\n\n${taggedPrompt}` : preamble;
 	const session: Omit<ChildSessionLaunch, "onExtensionError"> = {
 		cwd: input.cwd,
 		...(input.machine ? { machine: input.machine } : {}),
@@ -322,9 +327,11 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		runtime: config,
 		noSkills: !input.inheritSkills,
 		noContextFiles: !input.inheritProjectContext,
-		...(taggedPrompt !== undefined
-			? input.systemPromptMode === "replace" ? { systemPrompt: taggedPrompt } : { appendSystemPrompt: taggedPrompt }
-			: {}),
+		inheritGlobalContext: input.inheritGlobalContext,
+		// An agent with no prompt of its own still gets the preamble, appended.
+		...(taggedPrompt !== undefined && input.systemPromptMode === "replace"
+			? { systemPrompt: childPrompt }
+			: { appendSystemPrompt: childPrompt }),
 	};
 
 	return {

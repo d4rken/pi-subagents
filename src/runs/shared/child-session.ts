@@ -12,10 +12,12 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { dirname } from "node:path";
 import { pinChildCacheRetention } from "../../shared/child-cache-retention.ts";
 import { getAgentDir, PI_CODING_AGENT_PACKAGE_ROOT_ENV } from "../../shared/utils.ts";
 import { PI_CODING_AGENT_PACKAGE, resolveInstalledPiPackageRoot, resolvePiPackageRoot } from "./pi-spawn.ts";
 import type { ChildRuntimeConfig } from "./child-runtime-config.ts";
+import { ORCHESTRATION_SKILL_NAME } from "./subagent-prompt-runtime.ts";
 import type { RequiredChildExtensionSnapshot } from "../../shared/required-child-extensions.ts";
 import type { HerdrMachineReference, HerdrRemoteGitStatus } from "../../shared/types.ts";
 
@@ -50,6 +52,15 @@ export type ChildSessionStorage =
 	| { kind: "default" }
 	| { kind: "memory" };
 
+/** Pi loads one context file from the agent dir plus one for each ancestor of cwd,
+ *  so a file is global only when the agent dir is its immediate parent. A prefix
+ *  test would also drop project context from a cwd inside the agent dir, and would
+ *  match a sibling such as `<agentDir>foo`. Either path may be a symlink. */
+function isGlobalContextFile(file: string, agentDir: string): boolean {
+	const resolve = (x: string): string => { try { return fs.realpathSync(x); } catch { return x; } };
+	return dirname(file) === agentDir || dirname(resolve(file)) === resolve(agentDir);
+}
+
 export interface ChildSessionLaunch {
 	cwd: string;
 	/** Resolved pane-native placement. Local launches omit this field. */
@@ -76,6 +87,8 @@ export interface ChildSessionLaunch {
 	hooks: ChildHookExtension[];
 	noSkills: boolean;
 	noContextFiles: boolean;
+	/** False excludes the agent-dir context file while keeping project ones. */
+	inheritGlobalContext?: boolean;
 	systemPrompt?: string;
 	appendSystemPrompt?: string;
 	/**
@@ -343,6 +356,13 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				noPromptTemplates: true,
 				noThemes: true,
 				noContextFiles: launch.noContextFiles,
+				// Inheritance is resolved before the prompt is rendered. `noContextFiles`
+				// and `noSkills` are all-or-nothing, so the partial exclusions a child
+				// needs are expressed as overrides here.
+				...(launch.inheritGlobalContext === false
+					? { agentsFilesOverride: (base) => ({ agentsFiles: base.agentsFiles.filter((f) => !isGlobalContextFile(f.path, agentDir)) }) }
+					: {}),
+				skillsOverride: (base) => ({ ...base, skills: base.skills.filter((skill) => skill.name !== ORCHESTRATION_SKILL_NAME) }),
 				additionalExtensionPaths: launch.extensionPaths,
 				extensionFactories: launch.hooks,
 				extensionsOverride: prioritizeChildPromptRuntime,

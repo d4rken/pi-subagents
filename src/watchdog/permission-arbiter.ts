@@ -1,7 +1,7 @@
 import { Agent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import { convertToLlm, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
-import { createInitialSystemMessage, toToolDeclaration } from "@earendil-works/pi-ai";
+import { initialAgentState } from "../shared/agent-initial-state.ts";
 import { Type, type Static } from "typebox";
 import { appendPermissionAudit, permissionArgsPreview } from "../runs/shared/permissions.ts";
 import { agentStreamOptions } from "../shared/agent-stream-options.ts";
@@ -120,7 +120,7 @@ export function createWatchdogPermissionArbiter(options: WatchdogPermissionArbit
 				const tools = [tool];
 				agent = new Agent({
 					initialState: {
-						messages: [createInitialSystemMessage(systemPrompt, tools.map(toToolDeclaration))!],
+						...initialAgentState(systemPrompt, tools),
 						model: selection.model,
 						thinkingLevel: selection.thinkingLevel,
 						tools,

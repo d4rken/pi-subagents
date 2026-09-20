@@ -10,6 +10,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { buildInProcessChildLaunch, type BuildInProcessChildLaunchInput } from "../../src/runs/shared/child-launch.ts";
+import { childPromptPreamble } from "../../src/runs/shared/subagent-prompt-runtime.ts";
 import {
 	resolvePermissionSystemExtension,
 	resolvePiLaunchToolPlan,
@@ -71,7 +72,9 @@ function childLaunch(overrides: Partial<BuildInProcessChildLaunchInput> = {}): B
 function childSystemPrompt(result: ReturnType<typeof buildInProcessChildLaunch>): string {
 	const prompt = result.session.systemPrompt ?? result.session.appendSystemPrompt;
 	assert.ok(prompt !== undefined, "expected a child system prompt");
-	return prompt;
+	const preamble = childPromptPreamble({});
+	assert.ok(prompt.startsWith(preamble), "every child prompt opens with the boundary preamble");
+	return prompt.slice(preamble.length).replace(/^\n+/, "");
 }
 
 function escapeRegExp(value: string): string {
@@ -348,7 +351,9 @@ describe("child launch <active_agent> tag injection", () => {
 
 		const { session } = buildInProcessChildLaunch(childLaunch({ childAgentName: "helper" }));
 		assert.equal(session.systemPrompt, undefined);
-		assert.equal(session.appendSystemPrompt, undefined);
+		// The agent contributes no prompt, but the boundary still has to reach the
+		// child, so it is appended to whatever pi assembles by default.
+		assert.equal(session.appendSystemPrompt, childPromptPreamble({}));
 	});
 
 	it("replaces the system prompt in replace mode", () => {
@@ -356,7 +361,7 @@ describe("child launch <active_agent> tag injection", () => {
 		process.env.PI_CODING_AGENT_DIR = agentDir;
 
 		const { session } = buildInProcessChildLaunch(childLaunch({ systemPrompt: "You are a helper.", systemPromptMode: "replace", childAgentName: "helper" }));
-		assert.equal(session.systemPrompt, '<active_agent name="helper"/>\n\nYou are a helper.');
+		assert.equal(session.systemPrompt, `${childPromptPreamble({})}\n\n<active_agent name="helper"/>\n\nYou are a helper.`);
 		assert.equal(session.appendSystemPrompt, undefined);
 	});
 

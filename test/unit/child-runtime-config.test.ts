@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createChildHooks } from "../../src/runs/shared/child-hooks.ts";
 import { buildInProcessChildLaunch } from "../../src/runs/shared/child-launch.ts";
+import { childPromptPreamble } from "../../src/runs/shared/subagent-prompt-runtime.ts";
 import { childSupervisorMetadata, evaluateChildToolDiagnostic, type ChildRuntimeConfig } from "../../src/runs/shared/child-runtime-config.ts";
 
 function baseConfig(overrides: Partial<ChildRuntimeConfig> = {}): ChildRuntimeConfig {
@@ -83,8 +84,11 @@ describe("child runtime config", () => {
 		await structured.execute("call-1", { value: { done: true } });
 		assert.deepEqual(captured, [{ done: true }]);
 
+		// The contract now reaches the child through the launch preamble, so the
+		// handler must leave the assembled prompt exactly as pi recorded it.
 		const rewritten = await pi.handlers.get("before_agent_start")?.[0]?.({ systemPrompt: "base prompt" }) as { systemPrompt: string } | undefined;
-		assert.match(rewritten?.systemPrompt ?? "", /strict structured output contract/);
+		assert.equal(rewritten, undefined);
+		assert.match(childPromptPreamble({ structuredOutput: true }), /strict structured output contract/);
 	});
 
 	it("evaluates the tool diagnostic against the available tools", () => {

@@ -1,7 +1,8 @@
 import { Agent, type AgentTool, type StreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { createReadOnlyTools, convertToLlm, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
-import { createInitialSystemMessage, toToolDeclaration, type Model, type ProviderHeaders } from "@earendil-works/pi-ai";
+import { type Model, type ProviderHeaders } from "@earendil-works/pi-ai";
+import { initialAgentState } from "../shared/agent-initial-state.ts";
 import { Type, type Static } from "typebox";
 import { resolveModelCandidate } from "../runs/shared/model-resolution.ts";
 import { agentStreamOptions } from "../shared/agent-stream-options.ts";
@@ -333,7 +334,7 @@ async function runWatchdogAttempt(ctx: ExtensionContext, request: WatchdogReview
 	});
 	const agent = new Agent({
 		initialState: {
-			messages: [createInitialSystemMessage(systemPrompt, tools.map(toToolDeclaration))!],
+			...initialAgentState(systemPrompt, tools),
 			model: selection.model,
 			thinkingLevel: selection.thinkingLevel,
 			tools,

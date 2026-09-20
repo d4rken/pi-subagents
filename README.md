@@ -6,6 +6,10 @@
 
 `pi-subagents` lets Pi delegate work to focused child agents. Use it for code review, scouting, implementation, parallel audits, saved workflows, background jobs, and anything else that benefits from a second or third set of model eyes.
 
+Fork of [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents); pristine upstream is kept on the `upstream` branch. This fork assembles a child's prompt from its resource loader rather than editing the rendered string after `before_agent_start`, so providers that identify prompts by their text can still account for what they are handed.
+
+Tracks upstream v0.70.0. The watchdog's use of `createInitialSystemMessage` and `toToolDeclaration` is resolved at runtime rather than by name, so this also loads on pi 0.85.x, where those exports do not exist.
+
 <https://github.com/user-attachments/assets/702554ec-faaf-4635-80aa-fb5d6e292fd1>
 
 ## Install
