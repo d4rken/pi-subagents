@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `dispatchMode: "parent-controlled"` replaces the safety bullet that asks for one enclosing workflow call with guidance permitting sequential direct children, for planners that must consume each child's result in the parent before the next dispatch. The default, `"workflow"`, is unchanged.
+
 ### Changed
 
 - Remove inferred no-edit completion failures and task-wording acceptance escalation. Completion now relies on process, output, explicit acceptance, verification, review, and staged-index gates; mutation observations are diagnostic only. The valid report from [@SuTang-vain](https://github.com/SuTang-vain) led us to remove the unreliable guarantee rather than add more syntax exceptions, replacing [#2351](https://github.com/nicobailon/pi-subagents/issues/2351), [#2353](https://github.com/nicobailon/pi-subagents/issues/2353), and [#2354](https://github.com/nicobailon/pi-subagents/issues/2354) with [#2355](https://github.com/nicobailon/pi-subagents/issues/2355).

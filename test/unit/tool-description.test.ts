@@ -11,6 +11,7 @@ import {
 	COMPACT_SUBAGENT_TOOL_DESCRIPTION,
 	DEFAULT_SUBAGENT_TOOL_DESCRIPTION,
 	FULL_SUBAGENT_TOOL_DESCRIPTION,
+	PARENT_CONTROLLED_TOOL_PROMPT_SNIPPET,
 	SUBAGENT_SAFETY_GUIDANCE,
 	SUBAGENT_TOOL_PROMPT_GUIDELINES,
 	SUBAGENT_TOOL_PROMPT_SNIPPET,
@@ -237,6 +238,37 @@ describe("registered subagent tool description", () => {
 
 		assert.equal(description, FULL_SUBAGENT_TOOL_DESCRIPTION);
 		assert.ok(warnings.some((message) => message.includes("Ignoring invalid toolDescriptionMode")));
+	});
+
+	it("swaps only the one-workflow demand under parent-controlled dispatch, in every mode", () => {
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-tool-desc-dispatch-"));
+		const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-tool-desc-agent-"));
+		fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+		fs.writeFileSync(path.join(cwd, ".pi", "subagent-tool-description.md"), "Operator-owned custom guidance.\n\n{{safetyGuidance}}", "utf-8");
+		const demand = "exactly one top-level subagent workflow call with async:true; children launch only inside it.";
+
+		for (const toolDescriptionMode of [undefined, "full", "compact", "custom"] as const) {
+			const workflow = buildSubagentToolDescription({ toolDescriptionMode }, { cwd, agentDir });
+			const parent = buildSubagentToolDescription({ toolDescriptionMode, dispatchMode: "parent-controlled" }, { cwd, agentDir });
+			assert.ok(workflow.includes(demand), `${toolDescriptionMode} keeps the demand by default`);
+			assert.ok(!parent.includes(demand), `${toolDescriptionMode} drops the demand under parent-controlled dispatch`);
+			assert.match(parent, /Parent-controlled dispatch: .*launch each child directly with \{agent,task,async:true\}, one at a time, and consume its terminal result/);
+			assert.equal(buildSubagentToolDescription({ toolDescriptionMode, dispatchMode: "workflow" }, { cwd, agentDir }), workflow);
+			assert.equal(
+				parent.replace(/• Omit action for execution\. Parent-controlled dispatch: [^\n]*/, ""),
+				workflow.replace(/• Omit action for execution\. For an authorized delegated [^\n]*/, ""),
+				`${toolDescriptionMode} changes nothing else`,
+			);
+		}
+
+		assert.equal(buildSubagentToolPromptMetadata({ dispatchMode: "parent-controlled" }).promptSnippet, PARENT_CONTROLLED_TOOL_PROMPT_SNIPPET);
+		assert.doesNotMatch(PARENT_CONTROLLED_TOOL_PROMPT_SNIPPET, /one workflow call/);
+		assert.deepEqual(buildSubagentToolPromptMetadata({ toolDescriptionMode: "compact", dispatchMode: "parent-controlled" }), {});
+
+		const warnings: string[] = [];
+		const invalid = buildSubagentToolDescription({ dispatchMode: "sequential" } as never, { warn: (message) => warnings.push(message) });
+		assert.equal(invalid, DEFAULT_SUBAGENT_TOOL_DESCRIPTION);
+		assert.ok(warnings.some((message) => message.includes("Ignoring invalid dispatchMode")));
 	});
 
 	function readRegisteredTool(agentDir: string): { description: string; promptSnippet?: string; promptGuidelines?: string[]; properties: string[] } {
