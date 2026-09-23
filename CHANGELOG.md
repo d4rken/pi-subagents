@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- TypeBox is now a host-provided peer instead of a bundled dependency, so Pi no longer warns about the manifest and the extension, children, and background runners all use Pi's TypeBox copy. Thanks to [@felipemm](https://github.com/felipemm) for [#2454](https://github.com/nicobailon/pi-subagents/issues/2454) and [#2455](https://github.com/nicobailon/pi-subagents/pull/2455).
 - Reach pi-ai's `createInitialSystemMessage` and `toToolDeclaration` through a
   namespace import and fall back to `initialState.systemPrompt`. Importing them by
   name is a load-time `SyntaxError` on pi 0.85.x, which takes the extension down
