@@ -94,6 +94,8 @@ Controls the parent-facing `subagent` tool description registered at startup. Th
 
 Controls how the parent is told to launch delegated multi-step work. The default, `"workflow"`, keeps the safety guidance that asks for exactly one top-level workflow call with children launched only inside it. `"parent-controlled"` replaces that one bullet, in every `toolDescriptionMode` including `custom`, with guidance that lets the parent launch each child directly with `{agent,task,async:true}`, one at a time, consuming its terminal result before deciding the next; parallel or script-orchestrated children still go through one workflow call. It also replaces the default prompt snippet's "compose multi-child work in one workflow call". Use it when a planner in the parent session must record each child's result before choosing the next dispatch, which a workflow sandbox cannot do. The rest of the safety guidance, including the operator authority gate, is unchanged. Restart Pi after changing it.
 
+`{action:"doctor"}` reports the mode the running extension built its description for, in a `Dispatch` section: `- mode: parent-controlled (configured)` and `- direct sequential parent dispatch: enabled`, or `disabled` for `workflow`, which is shown as `(default)`, `(configured)`, or `(invalid "<value>" ignored)`. A consumer that needs direct dispatch can check that line before relying on it. For code, `DISPATCH_MODES`, `resolveDispatchMode`, `WORKFLOW_DISPATCH_GUIDANCE` and `PARENT_CONTROLLED_DISPATCH_GUIDANCE` are exported from `src/extension/tool-description.ts`.
+
 ## `inlineToolDisplay`
 
 ```json

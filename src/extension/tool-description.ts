@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ExtensionConfig, ToolDescriptionMode } from "../shared/types.ts";
+import type { DispatchMode, ExtensionConfig, ToolDescriptionMode } from "../shared/types.ts";
 import { getAgentDir, getProjectConfigDir } from "../shared/utils.ts";
 
 const CUSTOM_TOOL_DESCRIPTION_FILE = "subagent-tool-description.md";
@@ -8,8 +8,9 @@ const CUSTOM_TOOL_DESCRIPTION_MAX_BYTES = 50 * 1024;
 const AGENT_SELECTION_GUIDANCE = 'First call {action:"list",capabilities:true}: executable, non-disabled agents only; external-cli requires runner.available === true. Passive PATH/PATHEXT/X_OK is not authentication/version/launch proof; preflight is authoritative.';
 const SUBAGENT_FAILURE_RECOVERY_GUIDANCE = "Workflow, child launch, prompt runtime, extension load or child tooling failure is a lane infrastructure blocker. Stop; report exact failure, run/status and repo/cwd/worktree/branch/ref; verify clean worktree or capture partial diff before same-protocol retry or asking the owner. Never silently switch to interactive_shell, pi -ne, Codex/Claude/Cursor CLI or foreground/external mode: governed-workflow fallback requires explicit owner approval, not Pi core's generic pi -ne hint. Explicit foreground/CLI requests and work outside that protocol remain valid.";
 
-const WORKFLOW_DISPATCH_GUIDANCE = "• Omit action for execution. For an authorized delegated multi-step/parallel workflow: exactly one top-level subagent workflow call with async:true; children launch only inside it.";
-const PARENT_CONTROLLED_DISPATCH_GUIDANCE = "• Omit action for execution. Parent-controlled dispatch: when the parent plans an authorized delegated workflow's sequential steps, launch each child directly with {agent,task,async:true}, one at a time, and consume its terminal result before deciding the next dispatch. For parallel or script-orchestrated children, use one top-level workflow call with async:true and launch them only inside it.";
+export const DISPATCH_MODES: readonly DispatchMode[] = ["workflow", "parent-controlled"];
+export const WORKFLOW_DISPATCH_GUIDANCE = "• Omit action for execution. For an authorized delegated multi-step/parallel workflow: exactly one top-level subagent workflow call with async:true; children launch only inside it.";
+export const PARENT_CONTROLLED_DISPATCH_GUIDANCE = "• Omit action for execution. Parent-controlled dispatch: when the parent plans an authorized delegated workflow's sequential steps, launch each child directly with {agent,task,async:true}, one at a time, and consume its terminal result before deciding the next dispatch. For parallel or script-orchestrated children, use one top-level workflow call with async:true and launch them only inside it.";
 
 export const SUBAGENT_SAFETY_GUIDANCE = `SAFETY-CRITICAL SUBAGENT GUIDANCE:
 • Direct parent execution is the default. Invoke subagents only when delegation is authorized by the operator's current request or applicable user/project instructions; task size, complexity, risk, tool-call count, or recipe fit do not independently authorize delegation.
@@ -69,9 +70,24 @@ export interface SubagentToolPromptMetadata {
 export function buildSubagentToolPromptMetadata(config: Pick<ExtensionConfig, "toolDescriptionMode" | "dispatchMode"> = {}): SubagentToolPromptMetadata {
 	if (config.toolDescriptionMode !== undefined) return {};
 	return {
-		promptSnippet: config.dispatchMode === "parent-controlled" ? PARENT_CONTROLLED_TOOL_PROMPT_SNIPPET : SUBAGENT_TOOL_PROMPT_SNIPPET,
+		promptSnippet: resolveDispatchMode(config).mode === "parent-controlled" ? PARENT_CONTROLLED_TOOL_PROMPT_SNIPPET : SUBAGENT_TOOL_PROMPT_SNIPPET,
 		promptGuidelines: SUBAGENT_TOOL_PROMPT_GUIDELINES,
 	};
+}
+
+export interface ResolvedDispatchMode {
+	mode: DispatchMode;
+	source: "default" | "configured" | "invalid";
+	/** The rejected value, present only when source is "invalid". */
+	rejected?: unknown;
+}
+
+/** The dispatch mode the tool description is built for; the doctor report reads the same result. */
+export function resolveDispatchMode(config: Pick<ExtensionConfig, "dispatchMode">): ResolvedDispatchMode {
+	const value = config.dispatchMode;
+	if (value === undefined) return { mode: "workflow", source: "default" };
+	if (DISPATCH_MODES.includes(value)) return { mode: value, source: "configured" };
+	return { mode: "workflow", source: "invalid", rejected: value };
 }
 
 export function resolveToolDescriptionMode(config: Pick<ExtensionConfig, "toolDescriptionMode">, options?: ToolDescriptionOptions): ToolDescriptionMode {
@@ -164,12 +180,13 @@ function withMandatorySafetyGuidance(description: string): string {
 
 export function buildSubagentToolDescription(config: Pick<ExtensionConfig, "toolDescriptionMode" | "dispatchMode"> = {}, options?: ToolDescriptionOptions): string {
 	const description = buildModeDescription(config, options);
-	if (config.dispatchMode === undefined || config.dispatchMode === "workflow") return description;
-	if (config.dispatchMode !== "parent-controlled") {
-		warn(options, `Ignoring invalid dispatchMode ${JSON.stringify(config.dispatchMode)}; expected "workflow" or "parent-controlled".`);
-		return description;
+	const dispatch = resolveDispatchMode(config);
+	if (dispatch.source === "invalid") {
+		warn(options, `Ignoring invalid dispatchMode ${JSON.stringify(dispatch.rejected)}; expected "workflow" or "parent-controlled".`);
 	}
-	return description.replaceAll(WORKFLOW_DISPATCH_GUIDANCE, PARENT_CONTROLLED_DISPATCH_GUIDANCE);
+	return dispatch.mode === "parent-controlled"
+		? description.replaceAll(WORKFLOW_DISPATCH_GUIDANCE, PARENT_CONTROLLED_DISPATCH_GUIDANCE)
+		: description;
 }
 
 function buildModeDescription(config: Pick<ExtensionConfig, "toolDescriptionMode">, options?: ToolDescriptionOptions): string {

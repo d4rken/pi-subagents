@@ -156,6 +156,29 @@ describe("buildDoctorReport", () => {
 		}
 	});
 
+	it("reports the dispatch mode the tool description is built for", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-doctor-dispatch-"));
+		const report = (config: Record<string, unknown>) => buildDoctorReport({
+			cwd: root,
+			config,
+			state: makeState(root),
+			deps: {
+				isAsyncAvailable: () => true,
+				discoverAgentsAll: () => ({ builtin: [], user: [], project: [], chains: [], userDir: root, projectDir: root, userChainDir: root, projectChainDir: root, userSettingsPath: path.join(root, "user.json"), projectSettingsPath: path.join(root, "project.json") }),
+				discoverAvailableSkills: () => [],
+				diagnoseIntercomBridge: () => ({ active: false, mode: "off", wantsIntercom: false, supervisorChannelAvailable: false, extensionDir: "none" }),
+			},
+		});
+		try {
+			assert.match(report({}), /Dispatch\n- mode: workflow \(default\)\n- direct sequential parent dispatch: disabled\n/);
+			assert.match(report({ dispatchMode: "workflow" }), /Dispatch\n- mode: workflow \(configured\)\n- direct sequential parent dispatch: disabled\n/);
+			assert.match(report({ dispatchMode: "parent-controlled" }), /Dispatch\n- mode: parent-controlled \(configured\)\n- direct sequential parent dispatch: enabled\n/);
+			assert.match(report({ dispatchMode: "sequential" }), /Dispatch\n- mode: workflow \(invalid "sequential" ignored\)\n- direct sequential parent dispatch: disabled\n/);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("distinguishes dedicated runner forwarding from root state", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-doctor-parent-routing-"));
 		const previousChild = process.env.PI_SUBAGENT_CHILD;

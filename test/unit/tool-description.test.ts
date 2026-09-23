@@ -10,9 +10,13 @@ import {
 	buildSubagentToolPromptMetadata,
 	COMPACT_SUBAGENT_TOOL_DESCRIPTION,
 	DEFAULT_SUBAGENT_TOOL_DESCRIPTION,
+	DISPATCH_MODES,
 	FULL_SUBAGENT_TOOL_DESCRIPTION,
+	PARENT_CONTROLLED_DISPATCH_GUIDANCE,
 	PARENT_CONTROLLED_TOOL_PROMPT_SNIPPET,
+	resolveDispatchMode,
 	SUBAGENT_SAFETY_GUIDANCE,
+	WORKFLOW_DISPATCH_GUIDANCE,
 	SUBAGENT_TOOL_PROMPT_GUIDELINES,
 	SUBAGENT_TOOL_PROMPT_SNIPPET,
 } from "../../src/extension/tool-description.ts";
@@ -245,21 +249,25 @@ describe("registered subagent tool description", () => {
 		const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-tool-desc-agent-"));
 		fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
 		fs.writeFileSync(path.join(cwd, ".pi", "subagent-tool-description.md"), "Operator-owned custom guidance.\n\n{{safetyGuidance}}", "utf-8");
-		const demand = "exactly one top-level subagent workflow call with async:true; children launch only inside it.";
+		assert.deepEqual(DISPATCH_MODES, ["workflow", "parent-controlled"]);
+		assert.match(WORKFLOW_DISPATCH_GUIDANCE, /exactly one top-level subagent workflow call with async:true; children launch only inside it/);
+		assert.match(PARENT_CONTROLLED_DISPATCH_GUIDANCE, /launch each child directly with \{agent,task,async:true\}, one at a time, and consume its terminal result/);
 
 		for (const toolDescriptionMode of [undefined, "full", "compact", "custom"] as const) {
 			const workflow = buildSubagentToolDescription({ toolDescriptionMode }, { cwd, agentDir });
 			const parent = buildSubagentToolDescription({ toolDescriptionMode, dispatchMode: "parent-controlled" }, { cwd, agentDir });
-			assert.ok(workflow.includes(demand), `${toolDescriptionMode} keeps the demand by default`);
-			assert.ok(!parent.includes(demand), `${toolDescriptionMode} drops the demand under parent-controlled dispatch`);
-			assert.match(parent, /Parent-controlled dispatch: .*launch each child directly with \{agent,task,async:true\}, one at a time, and consume its terminal result/);
+			assert.ok(workflow.includes(WORKFLOW_DISPATCH_GUIDANCE), `${toolDescriptionMode} keeps the demand by default`);
+			assert.ok(!parent.includes(WORKFLOW_DISPATCH_GUIDANCE), `${toolDescriptionMode} drops the demand under parent-controlled dispatch`);
+			assert.ok(parent.includes(PARENT_CONTROLLED_DISPATCH_GUIDANCE), `${toolDescriptionMode} carries the parent-controlled guidance`);
 			assert.equal(buildSubagentToolDescription({ toolDescriptionMode, dispatchMode: "workflow" }, { cwd, agentDir }), workflow);
-			assert.equal(
-				parent.replace(/• Omit action for execution\. Parent-controlled dispatch: [^\n]*/, ""),
-				workflow.replace(/• Omit action for execution\. For an authorized delegated [^\n]*/, ""),
-				`${toolDescriptionMode} changes nothing else`,
-			);
+			assert.equal(parent.replaceAll(PARENT_CONTROLLED_DISPATCH_GUIDANCE, WORKFLOW_DISPATCH_GUIDANCE), workflow,
+				`${toolDescriptionMode} changes nothing else`);
 		}
+
+		assert.deepEqual(resolveDispatchMode({}), { mode: "workflow", source: "default" });
+		assert.deepEqual(resolveDispatchMode({ dispatchMode: "workflow" }), { mode: "workflow", source: "configured" });
+		assert.deepEqual(resolveDispatchMode({ dispatchMode: "parent-controlled" }), { mode: "parent-controlled", source: "configured" });
+		assert.deepEqual(resolveDispatchMode({ dispatchMode: "sequential" } as never), { mode: "workflow", source: "invalid", rejected: "sequential" });
 
 		assert.equal(buildSubagentToolPromptMetadata({ dispatchMode: "parent-controlled" }).promptSnippet, PARENT_CONTROLLED_TOOL_PROMPT_SNIPPET);
 		assert.doesNotMatch(PARENT_CONTROLLED_TOOL_PROMPT_SNIPPET, /one workflow call/);

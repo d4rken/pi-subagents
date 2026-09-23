@@ -7,6 +7,7 @@ import { getActiveAsyncCapacitySnapshot, resolveAbandonedSlotReleaseAfterMs, res
 
 import { diagnoseIntercomBridge, type IntercomBridgeDiagnostic } from "../intercom/intercom-bridge.ts";
 import { discoverAvailableSkills, type SkillSource } from "../agents/skills.ts";
+import { resolveDispatchMode } from "./tool-description.ts";
 import {
 	DIRS,
 	CHAIN_RUNS_DIR,
@@ -228,6 +229,15 @@ function formatWorkflowScriptSection(): string[] {
 	];
 }
 
+function formatDispatchSection(config: ExtensionConfig): string[] {
+	const { mode, source, rejected } = resolveDispatchMode(config);
+	const origin = source === "invalid" ? `invalid ${JSON.stringify(rejected)} ignored` : source;
+	return [
+		`- mode: ${mode} (${origin})`,
+		`- direct sequential parent dispatch: ${mode === "parent-controlled" ? "enabled" : "disabled"}`,
+	];
+}
+
 export function buildDoctorReport(input: DoctorReportInput): string {
 	const paths = input.paths ?? defaultPaths();
 	const deps = { ...DEFAULT_DEPS, ...input.deps };
@@ -256,6 +266,9 @@ export function buildDoctorReport(input: DoctorReportInput): string {
 		"",
 		"Active async capacity",
 		...formatActiveAsyncCapacitySection(input),
+		"",
+		"Dispatch",
+		...formatDispatchSection(input.config),
 		"",
 		"Workflow script",
 		...formatWorkflowScriptSection(),

@@ -5,6 +5,7 @@
 ### Added
 
 - `dispatchMode: "parent-controlled"` replaces the safety bullet that asks for one enclosing workflow call with guidance permitting sequential direct children, for planners that must consume each child's result in the parent before the next dispatch. The default, `"workflow"`, is unchanged.
+- The doctor report's `Dispatch` section shows the effective dispatch mode from the same resolver the tool description uses, and `DISPATCH_MODES`, `resolveDispatchMode` and both dispatch guidance constants are exported so consumers can check the capability without matching guidance prose.
 
 ### Changed
 
