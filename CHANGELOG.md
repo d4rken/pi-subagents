@@ -26,6 +26,9 @@
   `before_agent_start` is the one the provider receives. Editing it after that event
   left providers that identify prompts by their text unable to account for the prompt
   they were handed, which broke every `claude-bridge` child.
+- Keep Pi's own prompt first for Herdr pane-native children and append the child
+  boundary instructions after it. Placing them in front made the prompt begin with
+  child text instead of the way Pi renders it.
 - Fix watchdog helper working-directory context and pruned-fork overflow summaries on Pi 0.86.1, and cut active SDK and standalone support over to 0.86.1. Thanks to [@chem](https://github.com/chem) for [#2362](https://github.com/nicobailon/pi-subagents/issues/2362).
 - Launch the packaged inspector bootstrap from its compiled JavaScript instead of an absent TypeScript source. Thanks to [@pablog12](https://github.com/pablog12) for [#2360](https://github.com/nicobailon/pi-subagents/issues/2360).
 - Load the host `pi-coding-agent` for in-process child sessions from the resolved host package root instead of only a bare specifier, so foreground children launch on npm-hosted Pi installations where the extension's own `node_modules` tree cannot resolve the bare module (peers installed outside that tree). Thanks to [@nazerim](https://github.com/nazerim) for #2348.

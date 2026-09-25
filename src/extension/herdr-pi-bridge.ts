@@ -11,7 +11,7 @@ import { discoverAgents } from "../agents/agents.ts";
 import { buildSkillInjection, resolveSkills } from "../agents/skills.ts";
 import { buildAgentMemoryInjection } from "../agents/agent-memory.ts";
 import { appendAgentRefinementOverlay } from "../agents/agent-refinements.ts";
-import { rewriteSubagentPrompt } from "../runs/shared/subagent-prompt-runtime.ts";
+import { childPromptPreamble, stripUninheritedPrompt } from "../runs/shared/subagent-prompt-runtime.ts";
 import { resolveExistingReadPaths } from "../shared/settings.ts";
 
 interface PendingRequest { operation: "prompt" | "steer" | "follow-up" | "abort" | "supervisor-reply"; text?: string; supervisorId?: string }
@@ -29,6 +29,11 @@ function gitEvidence(cwd: string): Record<string, unknown> | undefined {
 	if (inside.status !== 0) return undefined;
 	const head = run(["rev-parse", "HEAD"]); const branch = run(["symbolic-ref", "--quiet", "--short", "HEAD"]); const dirty = run(["status", "--porcelain"]);
 	return { ...(head.status === 0 ? { head: head.stdout.trim() } : {}), ...(branch.status === 0 ? { branch: branch.stdout.trim() } : {}), dirty: Boolean(dirty.stdout.trim()) };
+}
+
+/** Child-only instructions follow Pi's own prompt, so the prompt still begins the way Pi renders it. */
+export function composeHerdrChildPrompt(prompt: string, policy: { agent: string; inheritProjectContext: boolean; inheritGlobalContext: boolean; inheritSkills: boolean }, persona: string): string {
+	return `${stripUninheritedPrompt(prompt, policy)}\n\n${childPromptPreamble({})}\n\n<active_agent name=${JSON.stringify(policy.agent)}/>\n\n${persona}`;
 }
 
 export function resolveRemoteHerdrResources(cwd: string, resources: { agent: string; skills?: string[]; toolCeiling?: string[]; reads?: string[] | false }, remoteDefaultTools: string[] = []): { agent: string; skills: string[]; tools: string[]; systemPrompt: string; inheritProjectContext: boolean; inheritGlobalContext: boolean; inheritSkills: boolean } {
@@ -109,7 +114,7 @@ export default function registerHerdrPiBridge(pi: ExtensionAPI): void {
 	pi.registerCommand("pi-subagents-bridge", { description: "Internal pane-native request dispatch", handler: (args, ctx) => execute(args.trim(), ctx as unknown as BridgeContext) });
 
 	const on = pi.on as unknown as (name: string, handler: (event: Record<string, unknown>, ctx: BridgeContext) => unknown) => void;
-	on("before_agent_start", (event) => resolvedSystemPrompt && resolvedContextPolicy ? { systemPrompt: `${rewriteSubagentPrompt(typeof event.systemPrompt === "string" ? event.systemPrompt : "", { inheritProjectContext: resolvedContextPolicy.inheritProjectContext, inheritGlobalContext: resolvedContextPolicy.inheritGlobalContext, inheritSkills: resolvedContextPolicy.inheritSkills })}\n\n<active_agent name=${JSON.stringify(resolvedContextPolicy.agent)}/>\n\n${resolvedSystemPrompt}` } : undefined);
+	on("before_agent_start", (event) => resolvedSystemPrompt && resolvedContextPolicy ? { systemPrompt: composeHerdrChildPrompt(typeof event.systemPrompt === "string" ? event.systemPrompt : "", resolvedContextPolicy, resolvedSystemPrompt) } : undefined);
 	on("session_start", (_event, ctx) => {
 		context = ctx; nativeSessionId = sessionId(ctx);
 		if (!nativeSessionId) throw new Error("Pane-native Pi bridge requires a persisted native session identity.");

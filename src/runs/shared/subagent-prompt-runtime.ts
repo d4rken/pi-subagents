@@ -215,9 +215,10 @@ export function childPromptPreamble(options: { fanoutChild?: boolean; structured
 /** Name of the orchestration skill a child must never inherit. */
 export const ORCHESTRATION_SKILL_NAME = "pi-subagents";
 
-export function rewriteSubagentPrompt(
+/** `prompt` without what a child does not inherit and without any child boundary instructions. */
+export function stripUninheritedPrompt(
 	prompt: string,
-	options: { inheritProjectContext: boolean; inheritGlobalContext: boolean; inheritSkills: boolean; fanoutChild?: boolean; structuredOutput?: boolean },
+	options: { inheritProjectContext: boolean; inheritGlobalContext: boolean; inheritSkills: boolean },
 ): string {
 	let rewritten = prompt;
 	if (!options.inheritProjectContext) {
@@ -230,7 +231,14 @@ export function rewriteSubagentPrompt(
 		rewritten = stripInheritedSkills(rewritten);
 	}
 	rewritten = stripSubagentOrchestrationSkill(rewritten);
-	rewritten = stripChildBoundaryInstructions(rewritten);
+	return stripChildBoundaryInstructions(rewritten);
+}
+
+export function rewriteSubagentPrompt(
+	prompt: string,
+	options: { inheritProjectContext: boolean; inheritGlobalContext: boolean; inheritSkills: boolean; fanoutChild?: boolean; structuredOutput?: boolean },
+): string {
+	const rewritten = stripUninheritedPrompt(prompt, options);
 	const boundary = options.fanoutChild ? CHILD_FANOUT_BOUNDARY_INSTRUCTIONS : CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS;
 	const structured = options.structuredOutput ? `\n\n${STRUCTURED_OUTPUT_INSTRUCTIONS}` : "";
 	return `${boundary}${structured}\n\n${rewritten}`;

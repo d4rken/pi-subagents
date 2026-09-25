@@ -14,7 +14,8 @@ import { formatHerdrMachineRunnerUnsupported, resolveHerdrMachinePlacement } fro
 import { buildRunnerChildLaunch } from "../../src/runs/background/runner-child-launch.ts";
 import { runChildSession } from "../../src/runs/background/run-child-session.ts";
 import { getAgentDir } from "../../src/shared/utils.ts";
-import registerHerdrPiBridge, { resolveRemoteHerdrResources } from "../../src/extension/herdr-pi-bridge.ts";
+import registerHerdrPiBridge, { composeHerdrChildPrompt, resolveRemoteHerdrResources } from "../../src/extension/herdr-pi-bridge.ts";
+import { CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS } from "../../src/runs/shared/subagent-prompt-runtime.ts";
 
 const machine = { provider: "herdr" as const, id: "m1", label: "workmac", target: "remote.example", cwd: "/remote/repo" };
 const runtime = { runId: "run", agent: "worker", childIndex: 0, fanoutChild: false, depth: 1, maxDepth: 1, inheritProjectContext: true, inheritGlobalContext: true, inheritSkills: false, fast: false, waitTool: { enabled: true } };
@@ -23,6 +24,13 @@ function launch(remote: boolean): ChildSessionLaunch { return { cwd: remote ? ma
 const child: ChildSession = { subscribe: () => () => {}, prompt: async () => {}, steer: async () => {}, followUp: async () => {}, abort: async () => {}, dispose: async () => {}, messages: [], sessionFile: undefined, sessionId: "native", modelId: "provider/model" };
 
 describe("pane-native Herdr placement public contracts", { skip: process.platform === "win32" }, () => {
+	it("keeps Pi's own prompt first and appends the child-only instructions after it", () => {
+		const pi = "You are an expert coding assistant operating inside pi, a coding agent harness.\n\n<tools>\n- read\n</tools>\n\n<cwd>\n/remote/repo\n</cwd>";
+		const policy = { agent: "worker", inheritProjectContext: true, inheritGlobalContext: true, inheritSkills: true };
+		assert.equal(composeHerdrChildPrompt(pi, policy, "PERSONA"), `${pi}\n\n${CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS}\n\n<active_agent name="worker"/>\n\nPERSONA`);
+		// A prompt that already carries the boundary does not get it twice.
+		assert.equal(composeHerdrChildPrompt(`${CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS}\n\n${pi}`, policy, "PERSONA").split(CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS).length, 2);
+	});
 	it("preserves explicit default versus named endpoint identity", () => {
 		assert.equal(parseHerdrEndpoint(JSON.stringify({ socket: "/tmp/herdr.sock", session: null, version: "0.9.0", protocol: 22, running: true, compatible: true })).session, null);
 		assert.equal(parseHerdrEndpoint(JSON.stringify({ socket: "/tmp/herdr.sock", session: null, version: "0.9.0", protocol: 22, running: true, compatible: true }), "default").session, null);
