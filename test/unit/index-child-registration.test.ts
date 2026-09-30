@@ -1157,6 +1157,62 @@ describe("subagent extension child mode", () => {
 		}
 	});
 
+	it("publishes schedule status through the real extension lifecycle without waking or keeping the agent busy", () => {
+		const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-schedule-status-ui-"));
+		const configDir = path.join(agentDir, "extensions", "subagent");
+		fs.mkdirSync(configDir, { recursive: true });
+		fs.writeFileSync(path.join(configDir, "config.json"), JSON.stringify({ asyncWidget: false, fleetView: false }), "utf-8");
+		const script = String.raw`
+			import assert from "node:assert/strict";
+			import fs from "node:fs";
+			import path from "node:path";
+			import registerSubagentExtension from "./index.ts";
+			for (const mode of ["ui", "headless", "stale"]) {
+				const handlers = new Map(), statuses = [], messages = [], busy = [];
+				let tool, stale = false, session = "owner";
+				const cwd = path.join(process.env.PI_CODING_AGENT_DIR, mode);
+				fs.mkdirSync(cwd, { recursive: true });
+				const pi = new Proxy({
+					events: { on() { return () => {}; }, emit(name, data) { if (name === "herdr:busy") busy.push(data); } },
+					on(name, fn) { handlers.set(name, [...(handlers.get(name) ?? []), fn]); },
+					registerTool(value) { if (value.name === "subagent") tool = value; },
+					registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {},
+					sendMessage(value) { messages.push(value); }, getSessionName() {},
+				}, { get(target, key) { return key in target ? target[key] : () => undefined; } });
+				const ctx = {
+					cwd, get hasUI() { if (stale) throw new Error("This extension ctx is stale after session replacement or reload."); return mode !== "headless"; },
+					ui: { setStatus(key, text) { if (key === "subagent-schedules") statuses.push(text); }, setWidget() {}, requestRender() {}, setToolsExpanded() {},
+						theme: { fg(_n, text) { return text; }, bg(_n, text) { return text; }, bold(text) { return text; } } },
+					sessionManager: { getSessionId() { return session; }, getSessionFile() { return path.join(cwd, session + ".jsonl"); }, getEntries() { return []; } },
+					modelRegistry: { getAvailable() { return []; } },
+				};
+				registerSubagentExtension(pi);
+				for (const fn of handlers.get("session_start")) await fn({ reason: "startup" }, ctx);
+				const created = await tool.execute("create", { action: "schedule.create", id: "watch", name: "Log watch", every: "5m", sessionOnly: true, workflowScript: "return 1" }, new AbortController().signal, undefined, ctx);
+				assert.equal(created.isError, undefined);
+				if (mode !== "headless") assert.match(statuses.at(-1), /Schedules: 1 armed here.*Log watch.*session-only/);
+				else assert.deepEqual(statuses, []);
+				assert.deepEqual(messages, [], "status must not request a model turn");
+				assert.equal(busy.some(value => value.active === true), false, "waiting timers are not running agents");
+				if (mode === "ui") {
+					session = "other";
+					for (const fn of handlers.get("session_start")) await fn({ reason: "new" }, ctx);
+					assert.equal(statuses.at(-1), undefined);
+					session = "owner";
+					for (const fn of handlers.get("session_start")) await fn({ reason: "switch" }, ctx);
+					assert.match(statuses.at(-1), /Schedules: 1 armed here/);
+				}
+				if (mode === "stale") stale = true;
+				for (const fn of handlers.get("session_shutdown")) await fn({ reason: "reload" });
+				if (mode === "ui") assert.equal(statuses.at(-1), undefined);
+				if (mode === "headless") assert.deepEqual(statuses, []);
+			}
+		`;
+		try {
+			execFileSync(process.execPath, ["--experimental-strip-types", "--import", "./test/support/register-loader.mjs", "--input-type=module", "--eval", script], { cwd: projectRoot, env: parentToolEnv(agentDir), stdio: "pipe" });
+		} finally { fs.rmSync(agentDir, { recursive: true, force: true }); }
+	});
+
 	it("ignores the current stale UI context during runtime reload cleanup", () => {
 		const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-stale-ui-reload-"));
 		const configDir = path.join(agentDir, "extensions", "subagent");

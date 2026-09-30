@@ -20,7 +20,7 @@ import { findModelInfo, toModelInfo } from "../shared/model-info.ts";
 import { formatTokens, shortenPath } from "../shared/formatters.ts";
 import { listAsyncRuns, formatAsyncRunProgressLabel, type AsyncRunSummary } from "../runs/background/async-status.ts";
 import { encodeInspectReply, handleInspectRpcArgs, INSPECT_WIDGET_KEY } from "../runs/background/inspect-rpc.ts";
-import { listScheduledRunSummaries } from "../runs/background/scheduled-runs.ts";
+import { scheduleStateLabel, type ScheduleSummary } from "../runs/background/scheduled-runs.ts";
 import { resolveAsyncStatusChild } from "../runs/shared/child-identity.ts";
 import { readStatus } from "../shared/utils.ts";
 import { getArtifactPaths, getArtifactsDir } from "../shared/artifacts.ts";
@@ -196,16 +196,16 @@ function formatAsyncStopTarget(run: AsyncRunSummary): StopSelectorTarget {
 	};
 }
 
-function scheduledStopTargets(ctx: ExtensionContext, _state: SubagentState): StopSelectorTarget[] {
+function scheduledStopTargets(ctx: ExtensionContext, listSchedules?: (ctx: ExtensionContext) => ScheduleSummary[]): StopSelectorTarget[] {
 	try {
-		return listScheduledRunSummaries(ctx.cwd)
-			.filter((schedule) => !schedule.paused && !schedule.activeRunId && schedule.trigger.nextRunAt)
+		return (listSchedules?.(ctx) ?? [])
+			.filter((schedule) => !schedule.paused && schedule.trigger.nextRunAt)
 			.sort((left, right) => left.trigger.nextRunAt!.localeCompare(right.trigger.nextRunAt!))
 			.map((schedule) => ({
 				kind: "scheduled" as const,
 				id: schedule.id,
 				label: `${schedule.id} · ${schedule.name}`,
-				detail: `scheduled · ${schedule.trigger.nextRunAt}`,
+				detail: `${scheduleStateLabel(schedule)} · ${schedule.trigger.nextRunAt}`,
 				actionLabel: "pause schedule",
 			}));
 	} catch {
@@ -213,13 +213,13 @@ function scheduledStopTargets(ctx: ExtensionContext, _state: SubagentState): Sto
 	}
 }
 
-function discoverStopTargets(ctx: ExtensionContext, state: SubagentState): StopSelectorTarget[] {
+function discoverStopTargets(ctx: ExtensionContext, state: SubagentState, listSchedules?: (ctx: ExtensionContext) => ScheduleSummary[]): StopSelectorTarget[] {
 	const sessionId = state.currentSessionId ?? ctx.sessionManager.getSessionId() ?? undefined;
 	const asyncTargets = listAsyncRuns(DIRS.async, {
 		states: ["queued", "running"],
 		...(sessionId ? { sessionId } : {}),
 	}).map(formatAsyncStopTarget);
-	return [...asyncTargets, ...scheduledStopTargets(ctx, state)];
+	return [...asyncTargets, ...scheduledStopTargets(ctx, listSchedules)];
 }
 
 function stopFallbackText(targets: StopSelectorTarget[]): string {
@@ -834,7 +834,7 @@ function slashRunWorkflowScript(key: string, child: Record<string, unknown>): st
 export function registerSlashCommands(
 	pi: ExtensionAPI,
 	state: SubagentState,
-	options: { fleetKeybindings?: FleetKeybindingsConfig; foregroundDetachShortcut?: string } = {},
+	options: { fleetKeybindings?: FleetKeybindingsConfig; foregroundDetachShortcut?: string; listSchedules?: (ctx: ExtensionContext) => ScheduleSummary[] } = {},
 ): { dispose: () => void } {
 	let fleetOpen = false;
 	let disposed = false;
@@ -1026,7 +1026,7 @@ export function registerSlashCommands(
 
 			let targets: StopSelectorTarget[];
 			try {
-				targets = discoverStopTargets(ctx, state);
+				targets = discoverStopTargets(ctx, state, options.listSchedules);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				ctx.ui.notify(message, "error");

@@ -79,6 +79,18 @@ export interface ScheduleRunRecord {
 
 type PublicScheduleRecord = Omit<ScheduleRecord, "ownerSessionFile">;
 
+export type ScheduleSummary = PublicScheduleRecord & {
+	timerState: "armed" | "unarmed" | "other-session" | "paused" | "finished";
+	overdue: boolean;
+};
+
+export type ArmedSchedule = Pick<ScheduleRecord, "id" | "name" | "cwd" | "sessionOnly"> & { nextRunAt: string };
+
+export function scheduleStateLabel(schedule: ScheduleSummary): string {
+	const labels = { armed: "armed here", unarmed: "not armed here", "other-session": "not armed here (other session)", paused: "paused", finished: "no next run" };
+	return `${schedule.activeRunId ? "running; " : ""}${labels[schedule.timerState]}${schedule.overdue ? "; overdue" : ""}`;
+}
+
 type ScheduledRunManagerDeps = {
 	config: ExtensionConfig;
 	launch(params: SubagentParamsLike, ctx: ExtensionContext, signal: AbortSignal): Promise<AgentToolResult<Details>>;
@@ -87,6 +99,7 @@ type ScheduledRunManagerDeps = {
 	randomId?: () => string;
 	resolveCapabilityCeiling?: (sessionId: string) => ResolvedSubagentCapabilityCeiling | undefined;
 	timers?: ScheduledRunTimers;
+	onArmedChange?: (schedules: ArmedSchedule[]) => void;
 };
 
 export function isScheduledRunAction(action: unknown): action is ScheduledRunAction {
@@ -518,7 +531,7 @@ export class ScheduledRunManager {
 	private store?: ScheduleStore;
 	private readonly stores = new Map<string, ScheduleStore>();
 	private readonly contexts = new Map<string, ExtensionContext>();
-	private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+	private readonly timers = new Map<string, { handle: ReturnType<typeof setTimeout>; schedule: ArmedSchedule }>();
 	private readonly observedAsyncIds = new Set<string>();
 	private readonly now: () => number;
 	private readonly randomId: () => string;
@@ -535,6 +548,23 @@ export class ScheduledRunManager {
 	bindSession(ctx: ExtensionContext): void {
 		if (!scheduledRunsEnabled(this.deps.config)) return;
 		this.selectProject(ctx.cwd, ctx);
+		this.publishArmed();
+	}
+
+	listSummaries(ctx: ExtensionContext): ScheduleSummary[] {
+		if (!scheduledRunsEnabled(this.deps.config)) return [];
+		const root = scheduledRunStorePath(ctx.cwd, undefined, this.deps.storeRoot);
+		return listScheduledRunSummaries(ctx.cwd, this.deps.storeRoot).map((schedule) => this.summarize(schedule, root, ctx));
+	}
+
+	private summarize(schedule: ScheduleRecord, root: string, ctx: ExtensionContext): ScheduleSummary {
+		const next = nextRunAt(schedule);
+		const armed = this.timers.has(`${root}\0${schedule.id}`);
+		const timerState = schedule.paused ? "paused"
+			: next === undefined ? "finished"
+			: !scheduleBelongsToSession(schedule, ctx) ? "other-session"
+			: armed ? "armed" : "unarmed";
+		return { ...publicScheduleRecord(schedule), timerState, overdue: !schedule.paused && next !== undefined && next < this.now() };
 	}
 
 	stop(): void {
@@ -665,14 +695,15 @@ export class ScheduledRunManager {
 	}
 
 	private list(): AgentToolResult<Details> {
-		const schedules = this.requireStore().list().sort((a, b) => (a.trigger.nextRunAt ?? "").localeCompare(b.trigger.nextRunAt ?? ""));
+		const schedules = this.listSummaries(this.requireContext(this.requireStore())).sort((a, b) => (a.trigger.nextRunAt ?? "").localeCompare(b.trigger.nextRunAt ?? ""));
 		if (!schedules.length) return textResult("No project schedules.", []);
-		return textResult([`Project schedules: ${schedules.length}`, ...schedules.map((item) => `- ${item.id} | ${item.paused ? "paused" : item.activeRunId ? "running" : "scheduled"} | ${item.trigger.nextRunAt ?? "no next run"} | ${item.sessionOnly === true ? "session-only" : "project"} | ${item.name}`)].join("\n"), schedules);
+		return textResult([`Project schedules: ${schedules.length}`, ...schedules.map((item) => `- ${item.id} | ${scheduleStateLabel(item)} | ${item.trigger.nextRunAt ?? "no next run"} | ${item.sessionOnly === true ? "session-only" : "project"} | ${item.name}`)].join("\n"), schedules);
 	}
 
 	private show(params: SubagentParamsLike): AgentToolResult<Details> {
-		const schedule = this.resolve(params);
-		return textResult([`Schedule: ${schedule.id}`, `Name: ${schedule.name}`, `State: ${schedule.paused ? "paused" : schedule.activeRunId ? "running" : "scheduled"}`, `Session only: ${schedule.sessionOnly === true ? "yes" : "no"}`, `Quiet: ${schedule.quiet === true ? "yes" : "no"}`, `Target: ${targetLabel(schedule.target)}`, `CWD: ${shortenPath(schedule.cwd)}`, `Next: ${schedule.trigger.nextRunAt ?? "none"}`, `Catch up: ${schedule.catchUp}`, schedule.activeRunId ? `Active run: ${schedule.activeRunId}` : undefined].filter(Boolean).join("\n"), [schedule]);
+		const store = this.requireStore();
+		const schedule = this.summarize(this.resolve(params), store.root, this.requireContext(store));
+		return textResult([`Schedule: ${schedule.id}`, `Name: ${schedule.name}`, `State: ${scheduleStateLabel(schedule)}`, `Session only: ${schedule.sessionOnly === true ? "yes" : "no"}`, `Quiet: ${schedule.quiet === true ? "yes" : "no"}`, `Target: ${targetLabel(schedule.target)}`, `CWD: ${shortenPath(schedule.cwd)}`, `Next: ${schedule.trigger.nextRunAt ?? "none"}`, `Catch up: ${schedule.catchUp}`, schedule.activeRunId ? `Active run: ${schedule.activeRunId}` : undefined].filter(Boolean).join("\n"), [schedule]);
 	}
 
 	private history(params: SubagentParamsLike): AgentToolResult<Details> {
@@ -751,7 +782,10 @@ export class ScheduledRunManager {
 	}
 
 	private restoreOne(store: ScheduleStore, schedule: ScheduleRecord, notBefore?: number, rearm = true): void {
-		if (!scheduleBelongsToSession(schedule, this.requireContext(store))) return;
+		if (!scheduleBelongsToSession(schedule, this.requireContext(store))) {
+			this.clearTimer(store, schedule.id);
+			return;
+		}
 		if (schedule.activeRunId) {
 			const run = store.history(schedule.id).find((item) => item.id === schedule.activeRunId);
 			if (run?.state === "running" && run.asyncId) this.observedAsyncIds.add(run.asyncId);
@@ -777,9 +811,12 @@ export class ScheduledRunManager {
 				fs.rmSync(path.join(store.directory(schedule.id), "active.lock"), { force: true });
 			}
 		}
-		if (!rearm || schedule.paused) return;
+		if (!rearm) return;
 		const next = nextRunAt(schedule);
-		if (next === undefined) return;
+		if (schedule.paused || next === undefined) {
+			this.clearTimer(store, schedule.id);
+			return;
+		}
 		if (!schedule.activeRunId && next < this.now() && schedule.catchUp === "none") {
 			try {
 				this.recordMissed(store, schedule, next, "timer");
@@ -793,7 +830,7 @@ export class ScheduledRunManager {
 
 	private arm(schedule: ScheduleRecord, store: ScheduleStore, notBefore?: number): void {
 		this.clearTimer(store, schedule.id);
-		if (schedule.paused) return;
+		if (schedule.paused || !scheduleBelongsToSession(schedule, this.requireContext(store))) return;
 		const next = nextRunAt(schedule);
 		if (next === undefined) return;
 		const timer = this.timersApi.setTimeout(() => {
@@ -806,7 +843,11 @@ export class ScheduledRunManager {
 			});
 		}, Math.min(Math.max(0, next - this.now(), (notBefore ?? 0) - this.now()), MAX_TIMER_DELAY_MS));
 		timer.unref?.();
-		this.timers.set(this.timerKey(store, schedule.id), timer);
+		this.timers.set(this.timerKey(store, schedule.id), {
+			handle: timer,
+			schedule: { id: schedule.id, name: schedule.name, cwd: schedule.cwd, sessionOnly: schedule.sessionOnly, nextRunAt: timestamp(next) },
+		});
+		this.publishArmed();
 	}
 
 	private restoreAfterFireError(store: ScheduleStore, id: string): void {
@@ -997,13 +1038,24 @@ export class ScheduledRunManager {
 		const key = this.timerKey(store, id);
 		const timer = this.timers.get(key);
 		if (!timer) return;
-		this.timersApi.clearTimeout(timer);
+		this.timersApi.clearTimeout(timer.handle);
 		this.timers.delete(key);
+		this.publishArmed();
 	}
 
 	private stopTimers(): void {
-		for (const timer of this.timers.values()) this.timersApi.clearTimeout(timer);
+		for (const timer of this.timers.values()) this.timersApi.clearTimeout(timer.handle);
 		this.timers.clear();
+		this.publishArmed();
+	}
+
+	private publishArmed(): void {
+		try {
+			this.deps.onArmedChange?.([...this.timers.values()].map(({ schedule }) => ({ ...schedule })));
+		} catch (error) {
+			// Display failures must not release a live run's overlap lock or interrupt cleanup.
+			console.warn(`[pi-subagents] Schedule status update failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
 	}
 }
 

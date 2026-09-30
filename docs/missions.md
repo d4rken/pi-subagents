@@ -116,6 +116,36 @@ subagent({ action: "schedule.create", id: "nightly-sweep", every: "24h", quiet: 
 
 Manage schedules with `schedule.list`, `schedule.show`, `schedule.history`, `schedule.pause`, `schedule.resume`, `schedule.run`, `schedule.run-due`, and `schedule.delete`.
 
+While this runtime has armed timers, its footer status stays visible between checks:
+
+```text
+Schedules: 1 armed here · Log watch · due 2030-01-01T00:05:00.000Z · session-only · /subagents-stop
+```
+
+The count covers timers registered in this runtime, including timers for projects
+opened here. The named schedule has the earliest planned due time, shown in UTC;
+this is not a countdown or a guarantee of execution at that instant. After an
+unexpected fire error, the planned time can be past due while a retry is delayed.
+During launch, the fired timer is removed; the indicator can briefly clear until
+the asynchronous run is attached and its next timer is armed. It then stays visible
+while that worker runs. FleetView and Herdr still count only executing work, not
+waiting timers. Custom footers must retain extension statuses
+to show the indicator. Headless sessions do not render it.
+
+`schedule.list` and `schedule.show` distinguish `armed here`, `not armed here`,
+`not armed here (other session)`, `paused`, and `no next run`. They also show a
+recorded running check and overdue planned times independently. Structured records
+include `timerState` and `overdue`. Another session's record is not proof that its
+owner is still running; the owner's session-file path is not exposed.
+`/subagents-stop` uses the configured schedule store and these same labels. Pausing
+a schedule there affects future checks, not a worker already running.
+
+Status updates follow scheduler transitions without filesystem polling. Changes
+made by another process can leave this runtime's indicator unchanged until its
+next timer check or session rebind. In particular, another process deleting a
+schedule does not immediately cancel this process's registered timer; the next
+check discards it without launching work.
+
 Behavior:
 
 - Runs always launch async with fresh context and disable automatic mission creation; mission attachment is deferred from this first slice.

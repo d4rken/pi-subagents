@@ -43,6 +43,7 @@ import { ASYNC_RETENTION_DELAY_MS, cleanupAsyncRetention } from "../runs/backgro
 import { createResultWatcher } from "../runs/background/result-watcher.ts";
 import { createResultDeliveryOwnership } from "../runs/background/result-delivery-ownership.ts";
 import { createScheduledRunManager } from "../runs/background/scheduled-runs.ts";
+import { formatScheduleStatus, SCHEDULE_STATUS_KEY } from "../tui/schedule-status.ts";
 import { registerSlashCommands } from "../slash/slash-commands.ts";
 import { registerPromptTemplateDelegationBridge } from "../slash/prompt-template-bridge.ts";
 import { registerMainWatchdog } from "../watchdog/register-main.ts";
@@ -512,10 +513,20 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	let executorScheduled: ((id: string, params: SubagentParamsLike, signal: AbortSignal, ctx: ExtensionContext) => Promise<AgentToolResult<Details>>) | undefined;
 	let goalTurnId = 0;
 	let releaseHostSessionLiveness = () => {};
+	let scheduleStatusVisible = false;
 	const scheduledStoreRoot = config.scheduledRuns?.storeRoot === undefined ? undefined : resolveScheduledStoreRoot(config.scheduledRuns.storeRoot);
 	const scheduledRunManager = createScheduledRunManager({
 		config,
 		storeRoot: scheduledStoreRoot,
+		onArmedChange: (schedules) => {
+			const text = formatScheduleStatus(schedules);
+			if (text === undefined && !scheduleStatusVisible) return;
+			withLastUiContext((ctx) => {
+				if (!ctx.hasUI) return;
+				ctx.ui.setStatus(SCHEDULE_STATUS_KEY, text);
+				scheduleStatusVisible = text !== undefined;
+			});
+		},
 		launch: (params, ctx, signal) => {
 			if (!executorScheduled) {
 				return Promise.resolve({
@@ -851,6 +862,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	});
 
 	const disposeSlashCommands = registerSlashCommands(pi, state, {
+		listSchedules: (ctx) => scheduledRunManager.listSummaries(ctx),
 		fleetKeybindings: config.fleetKeybindings,
 		foregroundDetachShortcut: config.foregroundDetachShortcut,
 	});

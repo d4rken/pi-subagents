@@ -15,6 +15,7 @@ import {
 	scheduledRunStorePath,
 	scheduledRunsEnabled,
 	type ScheduledRunManager,
+	type ArmedSchedule,
 } from "../../src/runs/background/scheduled-runs.ts";
 import type { ExtensionConfig } from "../../src/shared/types.ts";
 
@@ -49,6 +50,7 @@ type Harness = {
 	clock: { now: number };
 	timers: FakeTimers;
 	launches: Launch[];
+	armed: ArmedSchedule[][];
 	root: string;
 };
 
@@ -71,7 +73,7 @@ function context(cwd: string, sessionId = "session-a"): ExtensionContext {
 	} as unknown as ExtensionContext;
 }
 
-function harness(options: { cwd?: string; sessionId?: string; now?: number; config?: ExtensionConfig; randomId?: () => string } = {}): Harness {
+function harness(options: { cwd?: string; sessionId?: string; now?: number; config?: ExtensionConfig; randomId?: () => string; onArmedChange?: (schedules: ArmedSchedule[]) => void } = {}): Harness {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-schedule-test-"));
 	roots.push(root);
 	const project = options.cwd ?? path.join(root, "project");
@@ -80,6 +82,7 @@ function harness(options: { cwd?: string; sessionId?: string; now?: number; conf
 	const clock = { now: options.now ?? Date.parse("2030-01-01T00:00:00Z") };
 	const timers = new FakeTimers();
 	const launches: Launch[] = [];
+	const armed: ArmedSchedule[][] = [];
 	let id = 0;
 	const manager = createScheduledRunManager({
 		config: options.config ?? { scheduledRuns: { enabled: true } },
@@ -87,10 +90,11 @@ function harness(options: { cwd?: string; sessionId?: string; now?: number; conf
 		now: () => clock.now,
 		randomId: options.randomId ?? (() => `id-${++id}`),
 		timers,
+		onArmedChange: (schedules) => { armed.push(schedules); options.onArmedChange?.(schedules); },
 		launch: (params, launchCtx) => new Promise((resolve) => launches.push({ params: params as Record<string, unknown>, ctx: launchCtx, resolve: resolve as Launch["resolve"] })) as never,
 	});
 	manager.bindSession(ctx);
-	return { manager, ctx, clock, timers, launches, root };
+	return { manager, ctx, clock, timers, launches, armed, root };
 }
 
 function text(result: Awaited<ReturnType<ScheduledRunManager["handleToolCall"]>>): string {
@@ -133,6 +137,165 @@ describe("schedule helpers", () => {
 	it("honors the explicit feature opt-out", () => {
 		assert.equal(scheduledRunsEnabled({}), true);
 		assert.equal(scheduledRunsEnabled({ scheduledRuns: { enabled: false } }), false);
+	});
+});
+
+describe("schedule visibility", () => {
+	it("publishes armed timers through pause, resume, delete and shutdown", async () => {
+		const h = harness();
+		assert.deepEqual(h.armed.at(-1), []);
+		await h.manager.handleToolCall({ action: "schedule.create", id: "watch", name: "Log watch", every: "5m", sessionOnly: true, workflowScript: "return 1" }, h.ctx);
+		assert.deepEqual(h.armed.at(-1), [{ id: "watch", name: "Log watch", cwd: h.ctx.cwd, sessionOnly: true, nextRunAt: "2030-01-01T00:05:00.000Z" }]);
+		let shown = await h.manager.handleToolCall({ action: "schedule.show", id: "watch" }, h.ctx);
+		assert.match(text(shown), /State: armed here/);
+		assert.equal(detailRecords(shown)[0]?.timerState, "armed");
+		assert.equal("ownerSessionFile" in detailRecords(shown)[0]!, false);
+		await h.manager.handleToolCall({ action: "schedule.pause", id: "watch" }, h.ctx);
+		assert.deepEqual(h.armed.at(-1), []);
+		shown = await h.manager.handleToolCall({ action: "schedule.show", id: "watch" }, h.ctx);
+		assert.match(text(shown), /State: paused/);
+		await h.manager.handleToolCall({ action: "schedule.resume", id: "watch" }, h.ctx);
+		assert.equal(h.armed.at(-1)?.length, 1);
+		await h.manager.handleToolCall({ action: "schedule.delete", id: "watch" }, h.ctx);
+		assert.deepEqual(h.armed.at(-1), []);
+		await h.manager.handleToolCall({ action: "schedule.create", id: "again", at: "+1h", workflowScript: "return 1" }, h.ctx);
+		h.manager.stop();
+		assert.deepEqual(h.armed.at(-1), []);
+		assert.equal(h.timers.values.size, 0);
+		h.manager.stop();
+		assert.deepEqual(h.armed.at(-1), []);
+	});
+
+	it("does not claim a foreign overdue schedule is armed or expose its owner path", async () => {
+		const h = harness();
+		await h.manager.handleToolCall({ action: "schedule.create", id: "watch", every: "5m", sessionOnly: true, workflowScript: "return 1" }, h.ctx);
+		h.clock.now += 10 * 60_000;
+		const other = context(h.ctx.cwd, "other");
+		h.manager.bindSession(other);
+		const listed = await h.manager.handleToolCall({ action: "schedule.list" }, other);
+		assert.match(text(listed), /not armed here \(other session\); overdue/);
+		assert.equal(detailRecords(listed)[0]?.timerState, "other-session");
+		assert.equal(detailRecords(listed)[0]?.overdue, true);
+		assert.equal("ownerSessionFile" in detailRecords(listed)[0]!, false);
+		assert.deepEqual(h.armed.at(-1), []);
+	});
+
+	it("publishes the next timer after launch attachment and keeps it through check failure", async () => {
+		const h = harness();
+		await h.manager.handleToolCall({ action: "schedule.create", id: "watch", every: "5m", workflowScript: "return 1" }, h.ctx);
+		h.clock.now += 5 * 60_000;
+		h.timers.fireAll();
+		h.launches[0]!.resolve({ content: [{ type: "text", text: "Async" }], details: { asyncId: "check" } });
+		await flush();
+		assert.equal(h.armed.at(-1)?.[0]?.nextRunAt, "2030-01-01T00:10:00.000Z");
+		assert.match(text(await h.manager.handleToolCall({ action: "schedule.show", id: "watch" }, h.ctx)), /running; armed here/);
+		h.manager.handleAsyncCompletion({ runId: "check", success: false });
+		assert.equal(h.armed.at(-1)?.[0]?.nextRunAt, "2030-01-01T00:10:00.000Z");
+		assert.match(text(await h.manager.handleToolCall({ action: "schedule.show", id: "watch" }, h.ctx)), /State: armed here/);
+	});
+
+	it("does not rearm an old owner's timer when an in-flight launch or completion settles", async () => {
+		const h = harness();
+		await h.manager.handleToolCall({ action: "schedule.create", id: "watch", every: "5m", sessionOnly: true, workflowScript: "return 1" }, h.ctx);
+		h.clock.now += 5 * 60_000;
+		h.timers.fireAll();
+		h.manager.bindSession(context(h.ctx.cwd, "other"));
+		h.launches[0]!.resolve({ content: [{ type: "text", text: "Async" }], details: { asyncId: "old-check" } });
+		await flush();
+		assert.deepEqual(h.armed.at(-1), []);
+		h.manager.handleAsyncCompletion({ runId: "old-check", success: true });
+		assert.deepEqual(h.armed.at(-1), []);
+		assert.equal(h.timers.values.size, 0);
+	});
+
+	it("distinguishes a consumed one-shot from a timer waiting to fire", async () => {
+		const h = harness();
+		await h.manager.handleToolCall({ action: "schedule.create", id: "once", at: "+1m", workflowScript: "return 1" }, h.ctx);
+		h.clock.now += 60_000;
+		h.timers.fireAll();
+		h.launches[0]!.resolve({ content: [{ type: "text", text: "Async" }], details: { asyncId: "once" } });
+		await flush();
+		assert.match(text(await h.manager.handleToolCall({ action: "schedule.show", id: "once" }, h.ctx)), /running; no next run/);
+		h.manager.handleAsyncCompletion({ runId: "once", success: true });
+		assert.match(text(await h.manager.handleToolCall({ action: "schedule.show", id: "once" }, h.ctx)), /State: no next run/);
+		assert.deepEqual(h.armed.at(-1), []);
+	});
+
+	it("publishes the planned due time for long intervals, not the capped wake-up", async () => {
+		const h = harness();
+		await h.manager.handleToolCall({ action: "schedule.create", id: "long", every: "8w", workflowScript: "return 1" }, h.ctx);
+		assert.equal([...h.timers.values.values()][0]?.delay, 2_147_483_647);
+		assert.equal(h.armed.at(-1)?.[0]?.nextRunAt, "2030-02-26T00:00:00.000Z");
+		h.timers.fireAll();
+		assert.equal(h.armed.at(-1)?.[0]?.nextRunAt, "2030-02-26T00:00:00.000Z");
+		assert.equal(h.launches.length, 0);
+	});
+
+	it("clears externally deleted schedules at their next timer check without polling", async () => {
+		const h = harness();
+		await h.manager.handleToolCall({ action: "schedule.create", id: "removed", every: "5m", workflowScript: "return 1" }, h.ctx);
+		fs.rmSync(path.join(scheduledRunStorePath(h.ctx.cwd, undefined, path.join(h.root, "stores")), "removed"), { recursive: true });
+		assert.equal(h.armed.at(-1)?.length, 1);
+		h.clock.now += 5 * 60_000;
+		h.timers.fireAll();
+		await flush();
+		assert.deepEqual(h.armed.at(-1), []);
+		assert.equal(h.launches.length, 0);
+	});
+
+	it("keeps registered timers armed when another process advances their stored due time", async () => {
+		const h = harness();
+		await h.manager.handleToolCall({ action: "schedule.create", id: "watch", every: "5m", workflowScript: "return 1" }, h.ctx);
+		const file = path.join(scheduledRunStorePath(h.ctx.cwd, undefined, path.join(h.root, "stores")), "watch", "schedule.json");
+		const record = JSON.parse(fs.readFileSync(file, "utf8"));
+		record.trigger.nextRunAt = "2030-01-01T00:10:00Z";
+		fs.writeFileSync(file, JSON.stringify(record));
+		assert.equal(h.manager.listSummaries(h.ctx)[0]?.timerState, "armed");
+		assert.equal(h.armed.at(-1)?.length, 1);
+		h.clock.now += 5 * 60_000;
+		h.timers.fireAll();
+		assert.equal(h.launches.length, 0);
+		assert.equal(h.armed.at(-1)?.[0]?.nextRunAt, "2030-01-01T00:10:00.000Z");
+		assert.equal(h.manager.listSummaries(h.ctx)[0]?.timerState, "armed", "timestamp spelling does not change timer registration");
+	});
+
+	it("contains observer failures without releasing a live run's overlap lock or skipping cleanup", async () => {
+		let failStatus = false;
+		const h = harness({ onArmedChange: () => { if (failStatus) throw new Error("render failed"); } });
+		await h.manager.handleToolCall({ action: "schedule.create", id: "watch", every: "5m", workflowScript: "return 1" }, h.ctx);
+		const warnings: string[] = [];
+		const originalWarn = console.warn;
+		console.warn = (message?: unknown) => { warnings.push(String(message)); };
+		try {
+			failStatus = true;
+			h.clock.now += 5 * 60_000;
+			h.timers.fireAll();
+			h.launches[0]!.resolve({ content: [{ type: "text", text: "Async" }], details: { asyncId: "check" } });
+			await flush();
+			const lock = path.join(scheduledRunStorePath(h.ctx.cwd, undefined, path.join(h.root, "stores")), "watch", "active.lock");
+			assert.equal(fs.existsSync(lock), true);
+			assert.match(text(await h.manager.handleToolCall({ action: "schedule.history", id: "watch" }, h.ctx)), /running.*async check/);
+			h.clock.now += 5 * 60_000;
+			h.timers.fireAll();
+			await flush();
+			assert.equal(h.launches.length, 1, "a rendering failure must not permit overlap");
+			h.manager.handleAsyncCompletion({ runId: "check", success: true });
+			assert.equal(fs.existsSync(lock), false);
+			assert.match(text(await h.manager.handleToolCall({ action: "schedule.history", id: "watch" }, h.ctx)), /completed.*async check/);
+			h.manager.stop();
+			assert.equal(h.timers.values.size, 0);
+			h.manager.bindSession(h.ctx);
+			assert.equal(h.timers.values.size, 1, "binding still restores timers despite a broken observer");
+			assert.ok(warnings.length > 0);
+			assert.ok(warnings.every((warning) => warning.includes("Schedule status update failed: render failed")));
+		} finally { failStatus = false; console.warn = originalWarn; h.manager.stop(); }
+	});
+
+	it("publishes nothing and discovers no stop targets when schedules are disabled", () => {
+		const h = harness({ config: { scheduledRuns: { enabled: false } } });
+		assert.equal(h.armed.length, 0);
+		assert.deepEqual(h.manager.listSummaries(h.ctx), []);
+		assert.equal(h.timers.values.size, 0);
 	});
 });
 
@@ -219,16 +382,18 @@ describe("project schedule management", () => {
 		assert.equal(ownerTimers.values.size, 1, "the creating session must restore its schedule");
 	});
 
-	it("re-arms an owner timer after a non-owner context consumes it", async () => {
+	it("clears an owner timer immediately on a non-owner switch and restores it for the owner", async () => {
 		const h = harness({ sessionId: "owner-session" });
 		await h.manager.handleToolCall({ action: "schedule.create", id: "owner-only", cwd: h.ctx.cwd, every: "1h", sessionOnly: true, workflowScript: "return runs.run('main', { agent: 'worker' })" }, h.ctx);
 		const nextRunAt = listScheduledRunSummaries(h.ctx.cwd, path.join(h.root, "stores"))[0]?.trigger.nextRunAt;
 		h.manager.bindSession(context(h.ctx.cwd, "other-session"));
+		assert.equal(h.timers.values.size, 0, "non-owner switches must immediately disarm old timers");
+		assert.deepEqual(h.armed.at(-1), []);
 		h.clock.now += 3_600_000;
 		h.timers.fireAll();
 		await flush();
 		assert.equal(h.launches.length, 0, "a non-owner context must not launch the schedule");
-		assert.equal(h.timers.values.size, 0, "the consumed non-owner timer is not left spinning");
+		assert.equal(h.timers.values.size, 0, "the non-owner timer stays disarmed");
 		assert.equal(listScheduledRunSummaries(h.ctx.cwd, path.join(h.root, "stores"))[0]?.trigger.nextRunAt, nextRunAt, "a non-owner context must not advance the schedule");
 
 		h.manager.bindSession(h.ctx);
@@ -778,8 +943,9 @@ describe("recurring schedule execution", () => {
 		assert.equal([...h.timers.values.values()][0]?.delay, 3_600_000);
 		assert.match(warnings[0] ?? "", /failed to fire: persistent id failure/);
 		const shown = await h.manager.handleToolCall({ action: "schedule.show", id: "hourly" }, h.ctx);
-		assert.match(text(shown), /State: scheduled/);
+		assert.match(text(shown), /State: armed here/);
 		assert.match(text(shown), /2030-01-01T01:00:00.000Z/);
+		assert.equal(h.armed.at(-1)?.[0]?.nextRunAt, "2030-01-01T01:00:00.000Z", "show the planned due time, not the delayed retry");
 	});
 
 	it("re-arms overdue catch-up-none schedules when missed-run recovery fails", async () => {
@@ -823,8 +989,9 @@ describe("recurring schedule execution", () => {
 		assert.equal(h.timers.values.size, 0);
 		assert.match(warnings[0] ?? "", /failed to fire: persistent id failure/);
 		const shown = await h.manager.handleToolCall({ action: "schedule.show", id: "once" }, h.ctx);
-		assert.match(text(shown), /State: scheduled/);
+		assert.match(text(shown), /State: not armed here/);
 		assert.match(text(shown), /2030-01-01T01:00:00.000Z/);
+		assert.deepEqual(h.armed.at(-1), []);
 	});
 
 	it("run-due launches the latest missed occurrence while catchUp none records a miss", async () => {

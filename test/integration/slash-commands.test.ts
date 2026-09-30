@@ -7,7 +7,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 
 import { registerAgent } from "../../src/api/agents.ts";
 import { clearRuntimeAgentsForPi } from "../../src/agents/runtime-agent-registry.ts";
-import { scheduledRunStorePath } from "../../src/runs/background/scheduled-runs.ts";
+import { createScheduledRunManager, scheduledRunStorePath } from "../../src/runs/background/scheduled-runs.ts";
 import { updateActiveRunIndex } from "../../src/runs/background/active-run-index.ts";
 import { getArtifactPaths, getArtifactsDir } from "../../src/shared/artifacts.ts";
 import { ASYNC_DIR, DIRS } from "../../src/shared/types.ts";
@@ -58,7 +58,7 @@ interface RegisterSlashCommandsModule {
 			watcherRestartTimer: ReturnType<typeof setTimeout> | null;
 			resultFileCoalescer: { schedule(file: string, delayMs?: number): boolean; clear(): void };
 		},
-		options?: { foregroundDetachShortcut?: string },
+		options?: Parameters<typeof import("../../src/slash/slash-commands.ts").registerSlashCommands>[2],
 	) => { dispose(): void };
 }
 
@@ -673,7 +673,7 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 				name: "A very long scheduled run name with wide characters 中文🙂",
 				cwd: root,
 				trigger: { kind: "once", at: nextRunAt, nextRunAt },
-				target: { agent: "scout", task: "Inspect" },
+				target: { workflowScript: "return 1", args: {} },
 				overlap: "skip",
 				catchUp: "latest",
 				paused: false,
@@ -689,7 +689,8 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 				sendMessage() {},
 			};
 			const rendered = new Map<number, string[]>();
-			registerSlashCommands!(pi as never, createState(root));
+			const manager = createScheduledRunManager({ config: {}, launch: async () => { throw new Error("must not launch"); } });
+			registerSlashCommands!(pi as never, createState(root), { listSchedules: (ctx) => manager.listSummaries(ctx) });
 			await commands.get("subagents-stop")!.handler("", createCommandContext({
 				cwd: root,
 				hasUI: true,
@@ -710,12 +711,35 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 				},
 			}));
 
+			assert.equal(rendered.size, 5, "must actually open the selector");
 			for (const [width, lines] of rendered) {
 				assert.ok(lines.length > 0);
 				for (const line of lines) {
 					assert.ok(visibleWidth(line) <= width, `stop selector line exceeds render width: ${visibleWidth(line)} > ${width}`);
 				}
 			}
+		});
+	});
+
+	it("/subagents-stop uses the configured root and offers running foreign schedules for pausing", async () => {
+		await withTempProject("pi-stop-schedule-root-", async (root) => {
+			const commands = new Map<string, RegisteredSlashCommand>();
+			const sent: Array<{ content?: unknown }> = [];
+			const storeRoot = path.join(root, "external-schedules");
+			const manager = createScheduledRunManager({ config: {}, storeRoot, launch: async () => ({ content: [{ type: "text", text: "Async" }], details: { mode: "management", results: [], asyncId: "fake-check" } }) });
+			const owner = createCommandContext({ cwd: root, sessionManager: { getSessionId: () => "owner", getSessionFile: () => path.join(root, "owner.jsonl") } });
+			try {
+				await manager.handleToolCall({ action: "schedule.create", id: "foreign-watch", every: "5m", sessionOnly: true, workflowScript: "return 1" }, owner as never);
+				await manager.handleToolCall({ action: "schedule.run", id: "foreign-watch" }, owner as never);
+				registerSlashCommands!({ events: createEventBus(), registerCommand(name, spec) { commands.set(name, spec); }, registerShortcut() {}, sendMessage(message) { sent.push(message as { content?: unknown }); } }, createState(root), { listSchedules: (ctx) => manager.listSummaries(ctx) });
+				const other = createCommandContext({ cwd: root, sessionManager: { getSessionId: () => "other", getSessionFile: () => path.join(root, "other.jsonl") } });
+				await commands.get("subagents-stop")!.handler("", other);
+				const output = sent.map((message) => String(message.content)).join("\n");
+				assert.match(output, /foreign-watch/);
+				assert.match(output, /running; not armed here \(other session\)/);
+				assert.match(output, /schedule.pause/);
+				assert.equal(fs.existsSync(scheduledRunStorePath(root)), false, "must not fall back to the project-local store");
+			} finally { manager.stop(); }
 		});
 	});
 
