@@ -65,7 +65,8 @@ describe("in-process foreground child", () => {
 			assert.equal(session.launch.runtime.steerInbox, undefined, "in-process children have no steer inbox");
 			assert.equal(session.launch.runtime.depth, 1);
 			assert.equal(session.task?.startsWith("Task: Task"), true);
-			assert.equal(session.launch.systemPrompt?.startsWith('<active_agent name="echo"/>'), true);
+			assert.equal(session.launch.systemPrompt?.includes('\n\n<active_agent name="echo"/>\n\n'), true);
+			assert.equal(session.launch.systemPrompt?.includes("leaked-parent-value"), false);
 			assert.deepEqual(session.launch.storage, { kind: "memory" });
 		} finally {
 			delete process.env.PI_SUBAGENT_CHILD_AGENT;
