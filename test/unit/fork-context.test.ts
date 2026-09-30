@@ -209,12 +209,13 @@ describe("createForkContextResolver", () => {
 		}
 	});
 
-	it("fails clearly for an unflushed user-only parent", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-user-only-"));
+	it("fails clearly for an unflushed parent", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-unflushed-"));
 		try {
 			const sessionDir = path.join(tempDir, "sessions");
 			const parent = SessionManager.create(tempDir, sessionDir);
-			parent.appendMessage({ role: "user", content: "first turn prompt" });
+			// Pi writes the session file at the first user message; setup entries alone stay in memory.
+			parent.appendModelChange("anthropic", "claude-opus-5-5");
 			const parentSessionFile = parent.getSessionFile();
 			const leafId = parent.getLeafId();
 
