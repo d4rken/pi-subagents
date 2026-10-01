@@ -28,10 +28,10 @@ const expectedHostPeerRanges = {
 	typebox: "*",
 } satisfies Record<(typeof hostPeerPackages)[number], string>;
 const expectedHostDevVersions = {
-	"@earendil-works/pi-agent-core": "0.99.2",
-	"@earendil-works/pi-ai": "0.99.2",
-	"@earendil-works/pi-coding-agent": "0.99.2",
-	"@earendil-works/pi-tui": "0.99.2",
+	"@earendil-works/pi-agent-core": "1.0.0",
+	"@earendil-works/pi-ai": "1.0.0",
+	"@earendil-works/pi-coding-agent": "1.0.0",
+	"@earendil-works/pi-tui": "1.0.0",
 	typebox: "1.3.27",
 } satisfies Record<(typeof hostPeerPackages)[number], string>;
 

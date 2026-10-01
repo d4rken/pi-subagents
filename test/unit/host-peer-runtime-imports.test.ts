@@ -95,7 +95,10 @@ test("every host peer package the detached async runner imports is aliased to th
 	assert.ok(packageRoot, "expected the pi package (or its test shim) to be resolvable");
 	const resolved = resolveHostPeerAliases(packageRoot);
 	assert.deepEqual(resolved.missing, []);
-	for (const specifier of aliased) assert.ok(fs.existsSync(resolved.aliases[specifier]!), `alias target for ${specifier} exists`);
+	for (const { specifier, optional } of HOST_PEER_ALIASES) {
+		if (optional && !(specifier in resolved.aliases)) continue;
+		assert.ok(fs.existsSync(resolved.aliases[specifier]!), `alias target for ${specifier} exists`);
+	}
 });
 
 test("resolves pi-agent-core/node to its exact package export instead of appending to the root alias", () => {
