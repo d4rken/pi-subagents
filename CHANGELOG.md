@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- Background subagents failed to start on Pi 1.0.0 with "does not provide @earendil-works/pi-agent-core/node", because that Pi release no longer ships the module. Background launches now skip it when the installed Pi does not offer it, and still fail when Pi offers it but the file is missing. Thanks to [@albertgwo](https://github.com/albertgwo) for [#2634](https://github.com/nicobailon/pi-subagents/pull/2634).
 - TypeBox is now a host-provided peer instead of a bundled dependency, so Pi no longer warns about the manifest and the extension, children, and background runners all use Pi's TypeBox copy. Thanks to [@felipemm](https://github.com/felipemm) for [#2454](https://github.com/nicobailon/pi-subagents/issues/2454) and [#2455](https://github.com/nicobailon/pi-subagents/pull/2455).
 - Reach pi-ai's `createInitialSystemMessage` and `toToolDeclaration` through a
   namespace import and fall back to `initialState.systemPrompt`. Importing them by
