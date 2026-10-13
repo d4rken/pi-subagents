@@ -100,7 +100,7 @@ export default function registerHerdrPiBridge(pi: ExtensionAPI): void {
 		if (sessionId(ctx) !== nativeSessionId) throw new Error("Native Pi session identity changed.");
 		send({ type: "accepted", requestId, operation: request.operation, nativeSessionId });
 		const api = pi as unknown as { sendUserMessage(text: string, options?: { deliverAs?: "steer" | "followUp" }): void; abort(): void };
-		if (request.operation === "prompt") { activeRequestId = requestId; finalAssistant = undefined; api.sendUserMessage(request.text ?? ""); }
+		if (request.operation === "prompt") { activeRequestId = requestId; finalAssistant = undefined; api.sendUserMessage(request.text ?? "", { deliverAs: "followUp" }); }
 		else if (request.operation === "steer") api.sendUserMessage(request.text ?? "", { deliverAs: "steer" });
 		else if (request.operation === "follow-up") api.sendUserMessage(request.text ?? "", { deliverAs: "followUp" });
 		else if (request.operation === "abort") api.abort();
