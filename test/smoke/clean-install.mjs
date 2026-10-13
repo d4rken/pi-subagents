@@ -67,8 +67,10 @@ assert.deepEqual(resolved.missing, []);
 const tui = findHostPeerPackageDir(pi, "@earendil-works/pi-tui");
 assert.ok(tui.startsWith(host + path.sep), "TUI must come from the host install");
 assert.equal(resolved.aliases["@earendil-works/pi-tui"], resolvePackageSubpath(tui, "."));
+// Pi 1.2.0 dropped chord: alias it exactly when the real host install declares it.
+const hostDeclaresChord = Boolean(JSON.parse(fs.readFileSync(path.join(pi, "package.json"), "utf8")).dependencies?.["@earendil-works/chord"]);
 for (const specifier of ["@earendil-works/chord", "@earendil-works/chord/context"]) {
-	assert.ok(resolved.aliases[specifier]);
+	assert.equal(Boolean(resolved.aliases[specifier]), hostDeclaresChord, specifier);
 }
 assert.equal(resolved.aliases["@earendil-works/pi-client/unix"], undefined);
 fs.writeFileSync(path.join(root, "aliases.json"), JSON.stringify(resolved, null, 2));
