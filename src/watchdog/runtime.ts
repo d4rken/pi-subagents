@@ -329,6 +329,8 @@ export class MainWatchdogRuntime {
 
 	handleBeforeAgentStart(event: unknown, ctx: ContextLike): void {
 		if (this.disposed) return;
+		// Custom-message runs (subagent results, watchdog wakes) are not new user requests.
+		if (event && typeof event === "object" && (event as { messageType?: unknown }).messageType === "custom") return;
 		const incomingPrompt = promptFromBeforeAgentStart(event);
 		this.reset("before_agent_start");
 		this.askedThisPrompt = false;

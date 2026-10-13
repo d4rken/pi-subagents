@@ -237,6 +237,98 @@ describe("main watchdog runtime", () => {
 		} finally { f.runtime.dispose(); }
 	});
 
+	const customRunEvent = () => ({
+		type: "before_agent_start",
+		messageType: "custom",
+		message: { role: "custom", customType: "test", content: "Background subagent finished", display: true, timestamp: 0 },
+		systemPrompt: "SYSTEM PROMPT TEXT",
+	});
+	const assistantTurn = (text: string) => ({ type: "turn_end", message: { role: "assistant", content: text }, toolResults: [] });
+
+	it("keeps the user prompt and scope unchanged across a custom-message run", async () => {
+		const ctx = { cwd: "/tmp/project" };
+		const requests: Parameters<WatchdogReviewFunction>[0][] = [];
+		const runtime = new MainWatchdogRuntime({ cwd: ctx.cwd, resolveConfig: () => configResult(enabledConfig()), repoChangeSignature: () => undefined, review: (request) => { requests.push(request); return { stopReason: "stop" }; } });
+		try {
+			runtime.handleBeforeAgentStart({ prompt: "Original task" }, ctx);
+			const epoch = runtime.getSnapshot().epoch;
+			runtime.handleBeforeAgentStart(customRunEvent(), ctx);
+			assert.equal(runtime.getSnapshot().epoch, epoch);
+			runtime.handleTurnEnd(assistantTurn("Working on the original task."), ctx);
+			await runtime.handleAgentEnd({}, ctx);
+			assert.equal(requests.length, 1);
+			const delta = requests[0]!.delta;
+			assert.match(delta, /^Current scope:/);
+			assert.equal(delta.match(/Scope prompt \d+/g)?.length, 1, "scope keeps only the real user prompt");
+			assert.match(delta, /User prompt:\nOriginal task/, "pending user prompt still reaches the next delta");
+			assert.ok(!delta.includes("SYSTEM PROMPT TEXT"));
+		} finally { runtime.dispose(); }
+	});
+
+	it("does not abort an outstanding review on a custom-message run", async () => {
+		const ctx = { cwd: "/tmp/project" };
+		let finish!: (value: { clarification: { question: string; evidence: string } }) => void;
+		let signal: AbortSignal | undefined;
+		let started!: () => void;
+		const reviewStarted = new Promise<void>((resolve) => { started = resolve; });
+		const messages: string[] = [];
+		const runtime = new MainWatchdogRuntime({ cwd: ctx.cwd, resolveConfig: () => configResult(enabledConfig({ clarification: true })), repoChangeSignature: () => undefined, displayClarification: (text) => { messages.push(text); }, review: (request) => {
+			signal = request.signal;
+			started();
+			return new Promise((resolve) => { finish = resolve; });
+		} });
+		try {
+			runtime.handleBeforeAgentStart({ prompt: "Original task" }, ctx);
+			runtime.enqueueDelta("Original delta");
+			const boundary = runtime.handleAgentEnd({}, ctx);
+			await reviewStarted;
+			const epoch = runtime.getSnapshot().epoch;
+			runtime.handleBeforeAgentStart(customRunEvent(), ctx);
+			assert.equal(signal?.aborted, false);
+			assert.equal(runtime.getSnapshot().epoch, epoch);
+			finish({ clarification: { question: "Which scope?", evidence: "Original evidence" } });
+			await boundary;
+			assert.equal(messages.length, 1);
+			assert.match(messages[0]!, /Which scope\?[\s\S]*Original evidence/);
+		} finally { runtime.dispose(); }
+	});
+
+	it("does not re-arm the clarification on a custom-message run, only on a new user prompt", async () => {
+		const f = clarificationFixture();
+		f.config.maxWarnings = 0;
+		try {
+			await f.runtime.handleAgentEnd({}, f.ctx);
+			assert.equal(f.messages.length, 1);
+			f.runtime.handleBeforeAgentStart(customRunEvent(), f.ctx);
+			f.change();
+			f.runtime.enqueueDelta("Work after the clarification wake");
+			await f.runtime.handleAgentEnd({}, f.ctx);
+			assert.equal(f.requests.length, 2, "new edits still trigger ordinary review");
+			assert.equal(f.requests.at(-1)?.allowClarification, undefined);
+			assert.ok(!f.requests.at(-1)!.delta.includes("SYSTEM PROMPT TEXT"));
+			assert.equal(f.messages.length, 1, "custom run does not renew the one-question budget");
+			f.runtime.handleBeforeAgentStart({ prompt: "New genuine prompt" }, f.ctx);
+			f.change("next edit");
+			await f.runtime.handleAgentEnd({}, f.ctx);
+			assert.equal(f.messages.length, 2, "new prompt renews the one-question budget");
+		} finally { f.runtime.dispose(); }
+	});
+
+	it("never records the system prompt of a custom-message run as the user's request", async () => {
+		const ctx = { cwd: "/tmp/project" };
+		const requests: Parameters<WatchdogReviewFunction>[0][] = [];
+		const runtime = new MainWatchdogRuntime({ cwd: ctx.cwd, resolveConfig: () => configResult(enabledConfig()), repoChangeSignature: () => undefined, review: (request) => { requests.push(request); return { stopReason: "stop" }; } });
+		try {
+			runtime.handleBeforeAgentStart(customRunEvent(), ctx);
+			runtime.handleTurnEnd(assistantTurn("Handled the background result."), ctx);
+			await runtime.handleAgentEnd({}, ctx);
+			assert.equal(requests.length, 1);
+			assert.equal(requests[0]!.hasScope, false);
+			assert.doesNotMatch(requests[0]!.delta, /Current scope:|User prompt:/);
+			assert.ok(!requests[0]!.delta.includes("SYSTEM PROMPT TEXT"));
+		} finally { runtime.dispose(); }
+	});
+
 	it("adds no clarification calls or activity collection when off or without main delivery capability", async () => {
 		for (const [enabled, main] of [[false, true], [true, false]]) {
 			const f = clarificationFixture(enabled, main);
